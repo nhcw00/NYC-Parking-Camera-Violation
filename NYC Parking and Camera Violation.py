@@ -25,22 +25,26 @@ st.set_page_config(
 
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
-# API token is hardcoded here, but moving it to st.secrets is highly recommended.
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
 @st.cache_data
 def load_data():
-    """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
+    """Loads, cleans, and preprocesses ALL NYC parking violation data via SODA API."""
+    # --- CAUTION: ATTEMPTING TO LOAD FULL DATASET ---
+    st.warning("⚠️ Loading FULL dataset (millions of rows). This may take several minutes or cause a memory/timeout error in Streamlit Cloud.")
+    
     headers = {"X-App-Token": YOUR_APP_TOKEN}
-    # This URL is for the "Open Parking & Camera Violations" dataset (nc67-uf89)
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
-    # Essential: Use $limit to keep the app fast and within typical service constraints.
-    params = {"$limit": 5000} 
+    
+    # PARAMETER CHANGE: Removing {"$limit": 5000} to attempt full load
+    params = {} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
         if response.status_code == 200:
-            df = pd.DataFrame(response.json())
+            data = response.json()
+            df = pd.DataFrame(data)
+            st.info(f"Successfully loaded {len(df)} rows.")
         else:
             st.error(f"Error loading data from API. Status Code: {response.status_code}")
             return pd.DataFrame()
@@ -67,7 +71,7 @@ def load_data():
     df_processed['issue_date'] = pd.to_datetime(df_processed['issue_date'], errors='coerce')
     df_processed.dropna(subset=['issue_date'], inplace=True)
 
-    # 24-HOUR TIME FIX (Robust)
+    # 24-HOUR TIME FIX (Robust version)
     time_parts = df_processed['violation_time'].str.extract(r'(\d{2}).*?([AP])')
     time_parts.columns = ['hour', 'ampm']
     time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce') 
@@ -96,11 +100,24 @@ def get_model_results(df):
     # 1. Balance the Data
     min_class_size = df['is_paid'].value_counts().min()
     if min_class_size < 100:
-        st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable.")
+        st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
     
-    paid_df = df[df['is_paid'] == 1].sample(min_class_size, random_state=RANDOM_SEED, replace=False)
-    unpaid_df = df[df['is_paid'] == 0].sample(min_class_size, random_state=RANDOM_SEED, replace=False)
+    # Due to the large data size, we must limit the data used for modeling to prevent memory overflow
+    # We will use a maximum of 10,000 samples total (5k paid, 5k unpaid) if available.
+    max_samples_per_class = 5000
+    
+    paid_df = df[df['is_paid'] == 1]
+    unpaid_df = df[df['is_paid'] == 0]
+    
+    # Determine the actual size to sample from the smaller class (up to max_samples_per_class)
+    actual_sample_size = min(len(paid_df), len(unpaid_df), max_samples_per_class)
+    
+    # Sample the data to create the balanced class_df
+    paid_df = paid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
+    unpaid_df = unpaid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     class_df = pd.concat([paid_df, unpaid_df])
+
+    st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
     # 2. Define Preprocessor
     y_class = class_df['is_paid']
@@ -181,7 +198,21 @@ def get_model_results(df):
 # --- PLOTTING FUNCTIONS ---
 
 def plot_hotspots(df):
+    """Generates a bar chart of violations by county, with robustness checks."""
+    if 'county' not in df.columns or df['county'].isnull().all():
+        return go.Figure().add_annotation(
+            text="County data is not available or entirely null after cleaning.",
+            showarrow=False
+        )
+
     count_data = df['county'].value_counts().reset_index(names=['county', 'count'])
+    
+    if count_data.empty:
+        return go.Figure().add_annotation(
+            text="No violations found to plot by county.",
+            showarrow=False
+        )
+
     fig = px.bar(
         count_data, x='count', y='county', orientation='h',
         title='<b>Parking Violation Hotspots by County</b>',
@@ -201,6 +232,13 @@ def plot_rush_hour(df):
     return fig
 
 def plot_unpaid_heatmap(df):
+    # Check for empty dataframe before pivot
+    if df.empty or 'is_paid' not in df.columns:
+        return go.Figure().add_annotation(
+            text="No data available for Unpaid Heatmap.",
+            showarrow=False
+        )
+        
     df_unpaid = df[df['is_paid'] == 0]
     pivot_data = df_unpaid.pivot_table(
         index='county', columns='violation_hour', aggfunc='size', fill_value=0
@@ -241,7 +279,10 @@ st.write("This app analyzes the NYC Parking Violations dataset to find hotspots,
 # Load all data and models (will be cached)
 with st.spinner('Loading data and training models... This may take a moment on first run.'):
     df_processed = load_data()
+    
+    # Check 1: Stop execution if data loading failed
     if df_processed.empty:
+        st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
         
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)

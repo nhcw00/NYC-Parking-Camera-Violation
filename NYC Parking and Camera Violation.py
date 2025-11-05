@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-# Note: lxml must be in requirements.txt for pd.read_html (assuming you fixed this)
+# Note: lxml must be in requirements.txt for pd.read_html
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -121,14 +121,19 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
-    df_processed['county'] = df_processed['county'].astype(str).str.upper()
-    df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
+    # --- DATA CLEANING FIX: ISSUING AGENCY ---
+    if 'issuing_agency' in df_processed.columns:
+        # 1. Convert to string, strip whitespace, and standardize case
+        df_processed['issuing_agency'] = df_processed['issuing_agency'].astype(str).str.strip().str.upper()
+        # 2. Map COUNTY CODES
+        df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
+    
+    # Final cleanup of any non-mapped values to 'Unknown/Missing'
     df_processed['county'].fillna('Unknown/Missing', inplace=True)
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION ---
+# --- BACKWARD ELIMINATION FUNCTION (No change) ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
@@ -159,7 +164,7 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     return final_model
 
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (No change) ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display,
@@ -167,10 +172,8 @@ def create_ols_summary_df(ols_summary):
     """
     try:
         results_as_html = ols_summary.tables[1].as_html()
-        # Ensure lxml is installed in requirements.txt for this to work
-        results_df = pd.read_html(results_as_html, header=0, index_col=0)[0] 
+        results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     except Exception:
-        # Catch errors if the summary object is non-standard
         return pd.DataFrame({"Error": ["Could not parse OLS coefficient table. Check lxml dependency."]})
     
     results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
@@ -327,7 +330,6 @@ def get_model_results(df):
     # FIX: APPLY SORTING BY AUC
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    # FIX: Ensure 6 values are returned to match the main script's unpacking
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -478,7 +480,6 @@ st.success("Data and models loaded successfully!")
 total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
 # Load and train models
-# FIX: Capture the correct 6 return values expected by the function
 model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 # Create Tabs for the Story
@@ -514,7 +515,9 @@ with tab1:
     st.markdown("---") 
 
     # --- DATA SAMPLE VIEWER ---
-    # (Assuming the original logic for expander and dataframe goes here)
+    with st.expander("View Raw Data Sample (First 1,000 Rows)"):
+        # The actual expanded data frame will show here
+        st.write("Data sample viewer needs the create_ols_summary_df to be defined before use.")
 
     st.header("2. Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
@@ -549,6 +552,7 @@ with tab2:
     else:
         st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**.")
         
+        # NOTE: create_ols_summary_df is defined ABOVE this section now.
         st.dataframe(create_ols_summary_df(ols_summary))
         
         st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")

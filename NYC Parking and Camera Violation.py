@@ -64,7 +64,7 @@ def load_data():
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
-    params = {'$limit': 50000} 
+    params = {'$limit': 100000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)

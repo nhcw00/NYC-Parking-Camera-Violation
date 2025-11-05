@@ -89,17 +89,21 @@ def geocode_sample_data(sample_df):
     return sample_df[['lat', 'lon', 'fine_amount']].rename(columns={'fine_amount': 'size'})
 
 
+# Updated relevant section of load_data function:
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
-    # --- DIAGNOSTIC FIX: REMOVING ALL PARAMETERS EXCEPT $limit ---
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # FIX: Only include the $limit parameter to ensure the simplest possible API request.
-    params = {'$limit': 50000} 
+    # FINAL FIX: Add 'location' to the query just in case it holds coordinates
+    params = {'$limit': 50000, '$select': 'issue_date, violation_time, violation_status, fine_amount, county, issuing_agency, street_name, house_number, location'} 
+    # ... (rest of load_data function remains the same)
+    
+    # --- NOTE: The geocoding function and plotting functions will need a small adjustment
+    # to check for the 'location' field if we see data!
 
     try:
         response = requests.get(api_url, params=params, headers=headers)

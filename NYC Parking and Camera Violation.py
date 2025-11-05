@@ -344,7 +344,7 @@ def get_model_results(df):
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
-# --- PLOTTING FUNCTIONS ---
+# --- PLOTTING FUNCTIONS (No change) ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -483,7 +483,7 @@ with st.spinner('Loading data and training models... This may take a moment on f
 required_cols = ['county', 'issuing_agency', 'violation_hour', 'fine_amount', 'is_paid']
 if df_processed.empty or not all(col in df_processed.columns for col in required_cols):
     st.error("Cannot run the application: Data loading failed or essential columns are missing after cleaning. Please verify the SODA API URL and data availability.")
-    st.stop() # Halt execution if data is invalid
+    st.stop() # <-- THIS IS THE CRITICAL LINE TO PREVENT THE TYPE ERROR ON RELOAD
 
 # --- INITIALIZE APP RESOURCES (ONLY RUNS IF DATA IS VALID) ---
 st.success("Data and models loaded successfully!")
@@ -596,7 +596,7 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # This line is now safe due to the guard clause at the start
+            # This line is now protected by the st.stop() guard clause
             county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
             issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
         with col2:

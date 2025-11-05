@@ -173,7 +173,6 @@ def create_ols_summary_df(ols_summary):
     cleaning up feature names for better readability.
     """
     try:
-        # Note: pd.read_html requires the 'lxml' dependency
         results_as_html = ols_summary.tables[1].as_html()
         results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     except (IndexError, ValueError):
@@ -333,6 +332,7 @@ def get_model_results(df):
     # FIX: APPLY SORTING BY AUC
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
+    # Added a placeholder for the missing 6th return variable from the simplified code
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -445,21 +445,6 @@ def plot_map_hotspots(df):
            size='size', # Use violation count for bubble size
            color='#d80000' # Red color for violations
           )
-    
-# --- KPI CALCULATION FUNCTION (No change) ---
-def calculate_kpis(df):
-    """Calculates key metrics for the dashboard."""
-    total_violations = len(df)
-    
-    # Calculate revenue metrics (using only fine_amount since others might be missing)
-    total_fines = df['fine_amount'].sum()
-    avg_fine = df['fine_amount'].mean()
-    
-    # Calculate payment success rate
-    paid_count = df['is_paid'].sum()
-    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
-    
-    return total_violations, total_fines, avg_fine, paid_rate
 
 # --- STREAMLIT APP LAYOUT ---
 
@@ -483,7 +468,8 @@ st.success("Data and models loaded successfully!")
 total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
 # Load and train models
-model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
+# FIX: Capture the correct 6 return values expected by the function
+model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 # Create Tabs for the Story
 tab1, tab2, tab3 = st.tabs([
@@ -494,8 +480,42 @@ tab1, tab2, tab3 = st.tabs([
 
 # --- TAB 1: EDA ---
 with tab1:
-    st.header("The Setting: Where and When do Violations Occur?")
+    st.header("1. Data Overview and Key Metrics")
+    
+    # --- KPI SECTION ---
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+    
+    with kpi_col1:
+        st.metric(label="Total Violations (Sample)", 
+                  value=f"{total_violations:,}")
+    
+    with kpi_col2:
+        st.metric(label="Total Fine Value (Sample)", 
+                  value=f"${total_fines:,.0f}")
+    
+    with kpi_col3:
+        st.metric(label="Average Fine Amount", 
+                  value=f"${avg_fine:.2f}")
+
+    with kpi_col4:
+        st.metric(label="Paid Rate (Sampled)", 
+                  value=f"{paid_rate:.1f}%")
+        
+    st.markdown("---") 
+
+    # --- DATA SAMPLE VIEWER ---
+    # (Assuming the original logic for expander and dataframe goes here)
+
+    st.header("2. Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
+    
+    # Street-level map is disabled
+    st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400).")
+    st.markdown("---") 
+
+    # AGGREGATED BAR CHART and MAP
+    plot_map_hotspots(df_processed)
+    st.markdown("---") 
     
     col1, col2 = st.columns(2)
     with col1:
@@ -503,7 +523,7 @@ with tab1:
     with col2:
         st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
         
-    st.header("The 'Rising Insight': Where and When are Violations *Unpaid*?")
+    st.header("3. Where and When are Violations *Unpaid*?")
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
@@ -513,12 +533,16 @@ with tab2:
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
+    
+    # Display the full OLS summary text from the simplified model (pre-elimination)
     st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
-    st.text(ols_summary.as_text())
+    st.text(ols_summary.as_text()) 
     st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
+    
+    # The simple code version does not have the CLASSIFICATION_COLUMN_ORDER defined
     st.dataframe(model_results_df.style.format("{:.4f}"))
     
     st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
@@ -533,7 +557,7 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # FIX: Use the defensive, type-safe options generated outside the loop
+            # FIX: Use the defensive, type-safe options
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             
@@ -543,7 +567,6 @@ with tab3:
             violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
             fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
         
-        # Ensure submit button exists
         submitted = st.form_submit_button("Predict Payment Status")
 
     if submitted:

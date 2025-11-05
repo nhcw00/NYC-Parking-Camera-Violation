@@ -64,7 +64,7 @@ def load_data():
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
-    params = {'$limit': 50000} 
+    params = {'$limit': 100000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -121,14 +121,9 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # --- DATA CLEANING FIX: ISSUING AGENCY ---
-    if 'issuing_agency' in df_processed.columns:
-        # 1. Convert to string, strip whitespace, and standardize case
-        df_processed['issuing_agency'] = df_processed['issuing_agency'].astype(str).str.strip().str.upper()
-        # 2. Map COUNTY CODES
-        df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
-    
-    # Final cleanup of any non-mapped values to 'Unknown/Missing'
+    # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
+    df_processed['county'] = df_processed['county'].astype(str).str.upper()
+    df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
     df_processed['county'].fillna('Unknown/Missing', inplace=True)
 
     return df_processed
@@ -164,7 +159,7 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     return final_model
 
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (No change) ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display,
@@ -330,6 +325,7 @@ def get_model_results(df):
     # FIX: APPLY SORTING BY AUC
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
+    # FIX: Ensure 6 values are returned to match the main script's unpacking
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -515,9 +511,10 @@ with tab1:
     st.markdown("---") 
 
     # --- DATA SAMPLE VIEWER ---
+    # The data sample viewer relies on create_ols_summary_df, which isn't defined
+    # in the simplified version, so we revert to the simple display.
     with st.expander("View Raw Data Sample (First 1,000 Rows)"):
-        # The actual expanded data frame will show here
-        st.write("Data sample viewer needs the create_ols_summary_df to be defined before use.")
+        st.dataframe(df_processed.head(1000), use_container_width=True)
 
     st.header("2. Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
@@ -545,29 +542,15 @@ with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
-    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
-    
-    if isinstance(ols_summary, str):
-        st.error(ols_summary)
-    else:
-        st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**.")
-        
-        # NOTE: create_ols_summary_df is defined ABOVE this section now.
-        st.dataframe(create_ols_summary_df(ols_summary))
-        
-        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-        
-        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-            st.text(ols_summary.as_text())
+    st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
+    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
+    st.text(ols_summary.as_text())
+    st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
     
-    CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
-    
-    if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
-        model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
-    
+    # The simple code version does not have the CLASSIFICATION_COLUMN_ORDER defined
     st.dataframe(model_results_df.style.format("{:.4f}"))
     
     st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
@@ -582,7 +565,7 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # FIX: Use the defensive, type-safe options
+            # FIX: Use the final, robust, type-safe options generation
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             

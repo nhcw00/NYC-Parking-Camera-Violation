@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-# Note: lxml must be in requirements.txt for pd.read_html
+# Note: lxml must be in requirements.txt for pd.read_html (assuming you fixed this)
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -128,36 +128,29 @@ def load_data():
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION (No change) ---
+# --- BACKWARD ELIMINATION FUNCTION ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
     Returns the final fitted OLS model.
     """
-    # Start with all predictors
     X_cols = list(X_data.columns)
     
     while len(X_cols) > 0:
         X = X_data[X_cols]
-        # Add constant and fit the model
         X_opt = sm.add_constant(X)
         model = sm.OLS(y_data, X_opt).fit()
         
-        # Get P-values, excluding the intercept (const)
         p_values = model.pvalues.iloc[1:]
         
-        # Find the predictor with the highest P-value
         max_p_value = p_values.max()
         max_p_col = p_values.idxmax()
         
-        # If the highest P-value is below the threshold, stop
         if max_p_value < significance_level:
             break
         
-        # If the highest P-value is above the threshold, remove that predictor
         X_cols.remove(max_p_col)
         
-    # Return the final model summary after elimination
     if len(X_cols) == 0:
         return None
     
@@ -174,9 +167,11 @@ def create_ols_summary_df(ols_summary):
     """
     try:
         results_as_html = ols_summary.tables[1].as_html()
-        results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
-    except (IndexError, ValueError):
-        return pd.DataFrame({"Error": ["Could not parse OLS coefficient table."]})
+        # Ensure lxml is installed in requirements.txt for this to work
+        results_df = pd.read_html(results_as_html, header=0, index_col=0)[0] 
+    except Exception:
+        # Catch errors if the summary object is non-standard
+        return pd.DataFrame({"Error": ["Could not parse OLS coefficient table. Check lxml dependency."]})
     
     results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
     results_df = results_df[['Coefficient', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']]
@@ -332,7 +327,7 @@ def get_model_results(df):
     # FIX: APPLY SORTING BY AUC
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    # Added a placeholder for the missing 6th return variable from the simplified code
+    # FIX: Ensure 6 values are returned to match the main script's unpacking
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -446,6 +441,21 @@ def plot_map_hotspots(df):
            color='#d80000' # Red color for violations
           )
 
+# --- KPI CALCULATION FUNCTION ---
+def calculate_kpis(df):
+    """Calculates key metrics for the dashboard."""
+    total_violations = len(df)
+    
+    # Calculate revenue metrics (using only fine_amount since others might be missing)
+    total_fines = df['fine_amount'].sum()
+    avg_fine = df['fine_amount'].mean()
+    
+    # Calculate payment success rate
+    paid_count = df['is_paid'].sum()
+    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
+    
+    return total_violations, total_fines, avg_fine, paid_rate
+
 # --- STREAMLIT APP LAYOUT ---
 
 st.title("🗽 NYC Parking Violations: A Data Story")
@@ -532,17 +542,28 @@ with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
-    st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
+    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
     
-    # Display the full OLS summary text from the simplified model (pre-elimination)
-    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
-    st.text(ols_summary.as_text()) 
-    st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
+    if isinstance(ols_summary, str):
+        st.error(ols_summary)
+    else:
+        st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**.")
+        
+        st.dataframe(create_ols_summary_df(ols_summary))
+        
+        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
+        
+        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
+            st.text(ols_summary.as_text())
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
     
-    # The simple code version does not have the CLASSIFICATION_COLUMN_ORDER defined
+    CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
+    
+    if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
+        model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
+    
     st.dataframe(model_results_df.style.format("{:.4f}"))
     
     st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")

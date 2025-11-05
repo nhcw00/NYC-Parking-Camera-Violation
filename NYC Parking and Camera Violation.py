@@ -28,6 +28,7 @@ st.set_page_config(
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
+P_VALUE_THRESHOLD = 0.05 # Significance level for elimination
 
 # --- COUNTY MAPPING (Consolidated) ---
 COUNTY_MAPPING = {
@@ -121,16 +122,49 @@ def load_data():
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
     # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
-    # 1. Standardize to uppercase string
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
-    
-    # 2. Map all variations to the clean borough name
     df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
-
-    # 3. Final cleanup of any non-mapped values to 'Unknown/Missing'
     df_processed['county'].fillna('Unknown/Missing', inplace=True)
 
     return df_processed
+
+# --- BACKWARD ELIMINATION FUNCTION ---
+def backward_elimination_ols(X_data, y_data, significance_level=0.05):
+    """
+    Performs backward elimination to select statistically significant predictors.
+    Returns the final fitted OLS model summary.
+    """
+    # Start with all predictors
+    X_cols = list(X_data.columns)
+    
+    while len(X_cols) > 0:
+        X = X_data[X_cols]
+        # Add constant and fit the model
+        X_opt = sm.add_constant(X)
+        model = sm.OLS(y_data, X_opt).fit()
+        
+        # Get P-values, excluding the intercept (const)
+        p_values = model.pvalues.iloc[1:]
+        
+        # Find the predictor with the highest P-value
+        max_p_value = p_values.max()
+        max_p_col = p_values.idxmax()
+        
+        # If the highest P-value is below the threshold, stop
+        if max_p_value < significance_level:
+            break
+        
+        # If the highest P-value is above the threshold, remove that predictor
+        X_cols.remove(max_p_col)
+        
+    # Return the final model summary after elimination
+    if len(X_cols) == 0:
+        return None, "No significant predictors found."
+    
+    X_final = sm.add_constant(X_data[X_cols])
+    final_model = sm.OLS(y_data, X_final).fit()
+    return final_model, X_data[X_cols].columns.tolist()
+
 
 # --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
 def create_ols_summary_df(ols_summary):
@@ -163,6 +197,8 @@ def create_ols_summary_df(ols_summary):
             new_index.append(name_map[idx])
         elif idx.startswith('county_'):
             new_index.append(idx.split('_')[-1]) 
+        elif idx.startswith('issuing_agency_'):
+            new_index.append(idx.split('_')[-1])
         else:
             new_index.append(idx)
             
@@ -175,7 +211,7 @@ def create_ols_summary_df(ols_summary):
     # Styling function: highlight significant P-values (< 0.05)
     def style_significance(row):
         styles = [''] * len(row)
-        if row.iloc[1] < 0.05:
+        if row.iloc[1] < P_VALUE_THRESHOLD:
             styles[0] = 'background-color: #d4edda; font-weight: bold;'
             styles[1] = 'background-color: #d4edda; font-weight: bold; color: green;'
         return styles
@@ -196,7 +232,7 @@ def create_ols_summary_df(ols_summary):
 def get_model_results(df):
     """Trains classification models and runs OLS regression."""
     
-    # 1. Balance the Data
+    # 1. Balance the Data (Same as before)
     min_class_size = df['is_paid'].value_counts().min()
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
@@ -214,7 +250,7 @@ def get_model_results(df):
 
     st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
-    # 2. Define Preprocessor 
+    # 2. Define Preprocessor (Same as before)
     y_class = class_df['is_paid']
     X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
     categorical_features = ['county', 'issuing_agency']
@@ -228,12 +264,12 @@ def get_model_results(df):
         remainder='passthrough'
     )
 
-    # 3. Train/Test Split
+    # 3. Train/Test Split (Same as before)
     X_train, X_test, y_train, y_test = train_test_split(
         X_class, y_class, test_size=0.3, random_state=RANDOM_SEED, stratify=y_class
     )
 
-    # 4. Define All Models
+    # 4. Define All Models (Same as before)
     models = {
         "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
         "Naive Bayes": GaussianNB(),
@@ -243,7 +279,7 @@ def get_model_results(df):
         "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
     }
 
-    # 5. Train, Predict, and Store Results
+    # 5. Train, Predict, and Store Results (Same as before)
     accuracy_results = {}
     roc_results = {}
     target_names = ['Unpaid', 'Paid']
@@ -264,16 +300,20 @@ def get_model_results(df):
             'F1-Score (Paid)': report_dict['Paid']['f1-score']
         }
     
-    # 6. Run OLS Regression for Fine Amount
+    # 6. Run OLS Regression with Backward Elimination
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
-    # NOTE: pd.get_dummies will now use the consolidated names (Manhattan, Brooklyn, etc.)
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
-    X_reg_const = sm.add_constant(X_reg)
-    ols_model = sm.OLS(y_reg, X_reg_const).fit()
-    ols_summary = ols_model.summary() # Keep the full summary object
     
-    # 7. Train the FINAL Tuned Model (Decision Tree)
+    # --- APPLY BACKWARD ELIMINATION ---
+    ols_model, final_features = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
+    
+    if ols_model is None:
+        ols_summary = "No significant predictors found using backward elimination (P < 0.05)."
+    else:
+        ols_summary = ols_model.summary()
+    
+    # 7. Train the FINAL Tuned Model (Decision Tree) (Same as before)
     dt_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('classifier', DecisionTreeClassifier(
@@ -285,14 +325,14 @@ def get_model_results(df):
     ])
     dt_pipeline.fit(X_train, y_train)
     
-    # 8. Return results
+    # 8. Return results (Same as before)
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
 
-# --- PLOTTING FUNCTIONS ---
+# --- PLOTTING FUNCTIONS (No changes) ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -320,8 +360,6 @@ def plot_hotspots(df):
     )
     fig.update_layout(yaxis={'categoryorder':'total ascending'}) 
     return fig
-
-# --- REST OF PLOTTING, KPI, and LAYOUT FUNCTIONS (No Change) ---
 
 def plot_rush_hour(df):
     """Generates a bar chart of violations by hour, ordered 0-23."""
@@ -501,22 +539,24 @@ with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
-    st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
+    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
     
-    
-    
-    # Extract Adj. R-squared directly from the summary string
-    adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()
-    st.write(f"The OLS Regression has an **Adjusted R-squared of {adj_r_squared}**, meaning the factors below explain this proportion of the variance in the fine amount.")
-    
-    # Display the clean, styled OLS table
-    st.dataframe(create_ols_summary_df(ols_summary))
-    
-    st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-    
-    # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
-    with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-        st.text(ols_summary.as_text())
+    if isinstance(ols_summary, str):
+        # Handle the case where no significant predictors were found
+        st.error(ols_summary)
+    else:
+        # Extract Adj. R-squared directly from the summary string
+        adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()
+        st.write(f"The **Optimized OLS Regression** (Adjusted R-squared: **{adj_r_squared}**) uses only predictors significant at the $P < 0.05$ level.")
+        
+        # Display the clean, styled OLS table
+        st.dataframe(create_ols_summary_df(ols_summary))
+        
+        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
+        
+        # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
+        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
+            st.text(ols_summary.as_text())
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")

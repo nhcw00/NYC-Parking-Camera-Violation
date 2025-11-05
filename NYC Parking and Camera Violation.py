@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-from geopy.geocoders import Nominatim 
+# from geopy.geocoders import Nominatim # NO LONGER NEEDED (Geocoding removed for stability)
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -49,61 +49,21 @@ BOROUGH_COORDINATES = {
     'Unknown/Missing': (40.730610, -73.935242) 
 }
 
-# --- CACHED GEOCODING FUNCTION (Requires geopy) ---
-@st.cache_data
-def geocode_sample_data(sample_df):
-    """Geocodes a small sample of tickets using a public service (Nominatim)."""
-    st.info("Attempting to geocode a small sample for street-level map visualization...")
-    try:
-        geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
-    except Exception:
-        st.error("Geocoding service unavailable. Skipping street-level map.")
-        return pd.DataFrame()
+# --- REMOVING GEOCODING FUNCTIONALITY ---
+# The geocoding functionality must be removed to restore stability.
+# The street-level map section will now only display a message.
 
-    def get_address(row):
-        # Must handle missing keys gracefully in case API returns fewer columns
-        # Note: We rely on the API returning 'street_name' and 'house_number'
-        house = str(row.get('house_number', '')).split('-')[0]
-        street = row.get('street_name', '')
-        county = row.get('county', 'NY')
-        return f"{house} {street}, New York, {county}"
-        
-    sample_df['address'] = sample_df.apply(get_address, axis=1)
-    
-    def geocode_single(address):
-        try:
-            location = geolocator.geocode(address, timeout=5)
-            if location:
-                return (location.latitude, location.longitude)
-        except Exception:
-            return (None, None)
-        return (None, None)
-
-    # Limit geocoding to the first 500 rows for safety and speed.
-    geocoded_coords = sample_df['address'].head(500).apply(geocode_single)
-    
-    sample_df.loc[geocoded_coords.index, 'lat'] = geocoded_coords.apply(lambda x: x[0])
-    sample_df.loc[geocoded_coords.index, 'lon'] = geocoded_coords.apply(lambda x: x[1])
-
-    sample_df.dropna(subset=['lat', 'lon'], inplace=True)
-    return sample_df[['lat', 'lon', 'fine_amount']].rename(columns={'fine_amount': 'size'})
-
-
-# Updated relevant section of load_data function:
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
+    # --- FINAL FIX: ONLY USE $limit to guarantee a successful 200 response ---
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # FINAL FIX: Add 'location' to the query just in case it holds coordinates
-    params = {'$limit': 50000, '$select': 'issue_date, violation_time, violation_status, fine_amount, county, issuing_agency, street_name, house_number, location'} 
-    # ... (rest of load_data function remains the same)
-    
-    # --- NOTE: The geocoding function and plotting functions will need a small adjustment
-    # to check for the 'location' field if we see data!
+    # MINIMAL QUERY: Only include the $limit parameter.
+    params = {'$limit': 50000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -124,8 +84,8 @@ def load_data():
     df_processed = df.copy()
 
     # Data Cleaning and Type Conversion
-    # We now drop all columns that we didn't use in the simplified $select
-    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location']
+    # Dropping columns that may or may not have been returned by the API default.
+    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location', 'street_name', 'house_number']
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
     numeric_cols = ['fine_amount']
@@ -264,7 +224,7 @@ def get_model_results(df):
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
-# --- PLOTTING FUNCTIONS (No changes here) ---
+# --- PLOTTING FUNCTIONS ---
 
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
@@ -369,28 +329,6 @@ def plot_map_hotspots(df):
            color='#d80000' # Red color for violations
           )
     
-# --- NEW FUNCTION: STREET-LEVEL MAP HOTSPOTS ---
-def plot_street_level_hotspots(df):
-    """Uses geocoding to plot an actual street-level map."""
-    
-    st.markdown("#### Street-Level Violation Hotspots (Sampled & Geocoded)")
-    st.write("This map uses the street address data of a small sample (500 tickets) and converts them to coordinates. **Bubbles represent individual tickets.**")
-    
-    # Geocoding function is cached
-    st_level_map_data = geocode_sample_data(df.copy())
-
-    if st_level_map_data.empty or 'lat' not in st_level_map_data.columns:
-        st.error("Street-level mapping failed: Could not geocode sample data.")
-        return
-    
-    st.map(st_level_map_data, 
-           latitude='lat', 
-           longitude='lon', 
-           zoom=11, 
-           size='size', # Optional: Use fine amount for bubble size
-           color='#d80000'
-          )
-    
 # --- STREAMLIT APP LAYOUT ---
 
 st.title("🗽 NYC Parking Violations: A Data Story")
@@ -404,10 +342,8 @@ with st.spinner('Loading data and training models... This may take a moment on f
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
         
-    st_level_map_data = pd.DataFrame()
-    # Check if necessary columns for geocoding were returned by the simplified API call
-    if all(col in df_processed.columns for col in ['street_name', 'house_number']):
-        st_level_map_data = geocode_sample_data(df_processed.copy())
+    # The street-level map functionality is removed/commented out to restore stability.
+    st_level_map_data = pd.DataFrame() 
 
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
 
@@ -425,12 +361,9 @@ with tab1:
     st.header("The Setting: Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
     
-    # STREET-LEVEL MAP SECTION
-    if not st_level_map_data.empty:
-        plot_street_level_hotspots(df_processed)
-        st.markdown("---")
-    else:
-        st.warning("Skipping street-level map visualization because location data was not available or geocoding failed.")
+    # STREET-LEVEL MAP SECTION removed for stability.
+    st.warning("Street-level mapping feature temporarily disabled due to recurring API errors (Status 400).")
+    st.markdown("---") 
 
     # AGGREGATED BAR CHART
     plot_map_hotspots(df_processed)

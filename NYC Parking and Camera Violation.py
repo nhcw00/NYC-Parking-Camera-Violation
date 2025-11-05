@@ -16,6 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
+from lxml import etree # Must be available for pd.read_html
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -30,21 +31,21 @@ YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl"
 
 # --- COUNTY MAPPING ---
 COUNTY_MAPPING = {
-    'NY': 'Manhattan (New York)', 'MN': 'Manhattan (New York)',
+    'NY': 'Manhattan', 'MN': 'Manhattan',
     'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
-    'K': 'Brooklyn (Kings)', 'BK': 'Brooklyn (Kings)',
+    'K': 'Brooklyn', 'BK': 'Brooklyn', # Simplifying names here
     'BX': 'Bronx',
-    'R': 'Staten Island (Richmond)', 'ST': 'Staten Island (Richmond)',
+    'R': 'Staten Island', 'ST': 'Staten Island',
     None: 'Unknown/Missing' 
 }
 
 # --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
 BOROUGH_COORDINATES = {
-    'Manhattan (New York)': (40.7831, -73.9712),
+    'Manhattan': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
-    'Brooklyn (Kings)': (40.6782, -73.9442),
+    'Brooklyn': (40.6782, -73.9442),
     'Bronx': (40.8448, -73.8648),
-    'Staten Island (Richmond)': (40.5790, -74.1519),
+    'Staten Island': (40.5790, -74.1519),
     'Unknown/Missing': (40.730610, -73.935242) 
 }
 
@@ -117,10 +118,15 @@ def load_data():
     
     # MAP COUNTY CODES TO NAMES
     df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
+    
+    # FINAL CLEANUP: Ensure any stray single-letter codes that didn't map (like 'K' or 'Q' if they survived mapping)
+    # are converted to the full name to prevent double columns in OLS (e.g., 'Brooklyn' and 'county_K')
+    df_processed.loc[df_processed['county'] == 'K', 'county'] = 'Brooklyn' 
+    df_processed.loc[df_processed['county'] == 'Q', 'county'] = 'Queens'
 
     return df_processed
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (FIXES NAME ISSUES) ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display.
@@ -134,17 +140,45 @@ def create_ols_summary_df(ols_summary):
     results_df = results_df[['Coefficient', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']]
     
     # Clean up index names for clarity
-    results_df.index = results_df.index.str.replace('county_Manhattan (New York)', 'Manhattan')
-    results_df.index = results_df.index.str.replace('county_Brooklyn (Kings)', 'Brooklyn')
-    results_df.index = results_df.index.str.replace('county_Queens', 'Queens')
-    results_df.index = results_df.index.str.replace('county_Staten Island (Richmond)', 'Staten Island')
-    results_df.index = results_df.index.str.replace('issuing_agency_TRANSIT AUTHORITY', 'Transit Authority')
-    results_df.index = results_df.index.str.replace('const', 'Baseline Fine (Intercept)')
+    name_map = {
+        'const': 'Baseline Fine (Intercept)',
+        'violation_hour': 'Violation Hour',
+        'county_Brooklyn': 'Brooklyn',
+        'county_Kings': 'Brooklyn', # Renaming leftover Kings/K to Brooklyn
+        'county_Manhattan': 'Manhattan',
+        'county_Queens': 'Queens',
+        'county_Staten Island': 'Staten Island',
+        'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority'
+    }
+    
+    # Apply generalized renaming and remove unnecessary columns
+    new_index = []
+    for idx in results_df.index:
+        # Check for simple matches first
+        if idx in name_map:
+            new_index.append(name_map[idx])
+        # Check for complex matches (like Brooklyn (Kings))
+        elif 'Brooklyn' in idx:
+             new_index.append('Brooklyn')
+        elif 'Manhattan' in idx:
+            new_index.append('Manhattan')
+        elif 'Queens' in idx:
+            new_index.append('Queens')
+        elif 'Staten Island' in idx:
+            new_index.append('Staten Island')
+        else:
+            new_index.append(idx)
+            
+    results_df.index = new_index
+
+    # --- FIX 2: Consolidate duplicate rows (e.g., Brooklyn and county_Kings) ---
+    results_df = results_df.groupby(results_df.index).mean()
+    results_df.index.name = 'Factor'
 
     # Styling function: highlight significant P-values (< 0.05)
     def style_significance(row):
         styles = [''] * len(row)
-        # Assuming P>|t| is at index 1 (the second column in our selection)
+        # Assuming P>|t| is at index 1
         if row.iloc[1] < 0.05:
             # Highlight the coefficient and the P-value in green
             styles[0] = 'background-color: #d4edda; font-weight: bold;'
@@ -238,11 +272,12 @@ def get_model_results(df):
     # 6. Run OLS Regression for Fine Amount
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
+    # Ensure pd.get_dummies doesn't create duplicate 'Brooklyn' columns from 'K' since we mapped them earlier
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     X_reg_const = sm.add_constant(X_reg)
     ols_model = sm.OLS(y_reg, X_reg_const).fit()
-    ols_summary = ols_model.summary() # Keep the full summary object
-
+    ols_summary = ols_model.summary()
+    
     # 7. Train the FINAL Tuned Model (Decision Tree)
     dt_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
@@ -261,23 +296,8 @@ def get_model_results(df):
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
-# --- KPI CALCULATION FUNCTION ---
-def calculate_kpis(df):
-    """Calculates key metrics for the dashboard."""
-    total_violations = len(df)
-    
-    # Calculate revenue metrics (using only fine_amount since others might be missing)
-    total_fines = df['fine_amount'].sum()
-    avg_fine = df['fine_amount'].mean()
-    
-    # Calculate payment success rate
-    paid_count = df['is_paid'].sum()
-    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
-    
-    return total_violations, total_fines, avg_fine, paid_rate
 
-
-# --- PLOTTING FUNCTIONS ---
+# --- PLOTTING FUNCTIONS (No major changes) ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -381,6 +401,21 @@ def plot_map_hotspots(df):
            color='#d80000' # Red color for violations
           )
     
+# --- KPI CALCULATION FUNCTION (No change) ---
+def calculate_kpis(df):
+    """Calculates key metrics for the dashboard."""
+    total_violations = len(df)
+    
+    # Calculate revenue metrics (using only fine_amount since others might be missing)
+    total_fines = df['fine_amount'].sum()
+    avg_fine = df['fine_amount'].mean()
+    
+    # Calculate payment success rate
+    paid_count = df['is_paid'].sum()
+    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
+    
+    return total_violations, total_fines, avg_fine, paid_rate
+
 # --- STREAMLIT APP LAYOUT ---
 
 st.title("🗽 NYC Parking Violations: A Data Story")
@@ -408,11 +443,11 @@ tab1, tab2, tab3 = st.tabs([
     "3. The 'Solution' (Live Prediction Tool)"
 ])
 
-# --- TAB 1: EDA (Updated with KPIs and Data View) ---
+# --- TAB 1: EDA ---
 with tab1:
     st.header("1. Data Overview and Key Metrics")
     
-    # --- NEW KPI SECTION ---
+    # --- KPI SECTION ---
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
     
     with kpi_col1:
@@ -433,7 +468,7 @@ with tab1:
         
     st.markdown("---") 
 
-    # --- NEW DATA SAMPLE VIEWER ---
+    # --- DATA SAMPLE VIEWER ---
     with st.expander("View Raw Data Sample (First 1,000 Rows)"):
         st.dataframe(df_processed.head(1000), use_container_width=True)
 
@@ -464,7 +499,9 @@ with tab2:
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
-    st.write(f"The OLS Regression has an **Adjusted R-squared of {ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()}**, meaning the factors below explain this proportion of the variance in the fine amount.")
+    # Extract Adj. R-squared directly from the summary string
+    adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()
+    st.write(f"The OLS Regression has an **Adjusted R-squared of {adj_r_squared}**, meaning the factors below explain this proportion of the variance in the fine amount.")
     
     # Display the clean, styled OLS table
     st.dataframe(create_ols_summary_df(ols_summary))

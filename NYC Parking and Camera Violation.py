@@ -38,7 +38,7 @@ COUNTY_MAPPING = {
     'QNS': 'Queens',
     'K': 'Brooklyn', 
     'BK': 'Brooklyn',
-    'Kings': "Brooklyn',
+    'Kings': 'Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
     None: 'Unknown/Missing' 

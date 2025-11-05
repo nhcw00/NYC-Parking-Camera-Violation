@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-from lxml import etree # Must be available for pd.read_html
+from lxml import etree 
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -29,22 +29,22 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
-# --- COUNTY MAPPING ---
+# --- COUNTY MAPPING (Finalized) ---
 COUNTY_MAPPING = {
-    'NY': 'Manhattan', 
-    'MN': 'Manhattan',
-    'Q': 'Queens', 
-    'QN': 'Queens', 
-    'QNS': 'Queens',
-    'K': 'Brooklyn', 
-    'BK': 'Brooklyn',
-    'Kings': 'Brooklyn',
+    'NY': 'Manhattan', 'MN': 'Manhattan',
+    'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
+    'K': 'Brooklyn', 'BK': 'Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
-    None: 'Unknown/Missing' 
+    # Adding the specific unmapped values that sometimes appear in the raw data
+    'KINGS': 'Brooklyn', # Catching the uppercase version of 'Kings'
+    'RICH': 'Staten Island', # Richmond
+    'NEW YORK': 'Manhattan', # Full name sometimes appears
+    None: 'Unknown/Missing', 
+    'nan': 'Unknown/Missing'
 }
 
-# --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
+# --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change) ---
 BOROUGH_COORDINATES = {
     'Manhattan': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
@@ -121,23 +121,27 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # MAP COUNTY CODES TO NAMES
-    df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
+    # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
+    # Convert county column to string and uppercase to standardize mapping keys
+    df_processed['county'] = df_processed['county'].astype(str).str.upper()
     
-    # FINAL CLEANUP: Ensure any stray single-letter codes that didn't map (like 'K' or 'Q' if they survived mapping)
-    # are converted to the full name to prevent double columns in OLS (e.g., 'Brooklyn' and 'county_K')
-    df_processed.loc[df_processed['county'] == 'K', 'county'] = 'Brooklyn' 
-    df_processed.loc[df_processed['county'] == 'Q', 'county'] = 'Queens'
+    # Map all variations to the clean borough name
+    df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
 
+    # Final cleanup of any non-mapped values to 'Unknown/Missing'
+    df_processed['county'].fillna('Unknown/Missing', inplace=True)
+    
     return df_processed
 
 # --- NEW FUNCTION FOR CLEAN OLS DISPLAY (FIXES NAME ISSUES) ---
 def create_ols_summary_df(ols_summary):
     """
-    Extracts key metrics from the OLS summary table and formats them for display.
+    Extracts key metrics from the OLS summary table and formats them for display,
+    cleaning up feature names for better readability.
     """
     # Extract the main parameters table (the second table in the summary)
     results_as_html = ols_summary.tables[1].as_html()
+    # Use index_col=0 to make the feature name the index
     results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     
     # Clean up column names and select relevant columns
@@ -148,44 +152,33 @@ def create_ols_summary_df(ols_summary):
     name_map = {
         'const': 'Baseline Fine (Intercept)',
         'violation_hour': 'Violation Hour',
-        'county_Brooklyn': 'Brooklyn',
-        'county_Kings': 'Brooklyn', # Renaming leftover Kings/K to Brooklyn
-        'county_Manhattan': 'Manhattan',
-        'county_Queens': 'Queens',
-        'county_Staten Island': 'Staten Island',
-        'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority'
+        'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority',
+        'issuing_agency_TRAFFIC': 'Traffic Dept.',
+        'issuing_agency_DEPARTM': 'Police Dept.', # Assuming DEPARTM refers to NYPD or similar
     }
     
-    # Apply generalized renaming and remove unnecessary columns
+    # Apply renaming and consolidation logic
+    results_df.index = results_df.index.to_series().replace(name_map)
+    
+    # Further clean/consolidate based on string matching (for county dummies)
     new_index = []
     for idx in results_df.index:
-        # Check for simple matches first
-        if idx in name_map:
-            new_index.append(name_map[idx])
-        # Check for complex matches (like Brooklyn (Kings))
-        elif 'Brooklyn' in idx:
-             new_index.append('Brooklyn')
-        elif 'Manhattan' in idx:
-            new_index.append('Manhattan')
-        elif 'Queens' in idx:
-            new_index.append('Queens')
-        elif 'Staten Island' in idx:
-            new_index.append('Staten Island')
+        if idx.startswith('county_'):
+            # Strip the 'county_' prefix and use the clean name
+            new_index.append(idx.split('_')[-1]) 
         else:
             new_index.append(idx)
             
     results_df.index = new_index
 
-    # --- FIX 2: Consolidate duplicate rows (e.g., Brooklyn and county_Kings) ---
+    # Consolidate any duplicate index rows (like if both 'Brooklyn' and 'county_Brooklyn' survived, though shouldn't happen now)
     results_df = results_df.groupby(results_df.index).mean()
     results_df.index.name = 'Factor'
 
     # Styling function: highlight significant P-values (< 0.05)
     def style_significance(row):
         styles = [''] * len(row)
-        # Assuming P>|t| is at index 1
         if row.iloc[1] < 0.05:
-            # Highlight the coefficient and the P-value in green
             styles[0] = 'background-color: #d4edda; font-weight: bold;'
             styles[1] = 'background-color: #d4edda; font-weight: bold; color: green;'
         return styles
@@ -277,7 +270,7 @@ def get_model_results(df):
     # 6. Run OLS Regression for Fine Amount
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
-    # Ensure pd.get_dummies doesn't create duplicate 'Brooklyn' columns from 'K' since we mapped them earlier
+    # NOTE: The county names should be clean due to the fix in load_data
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     X_reg_const = sm.add_constant(X_reg)
     ols_model = sm.OLS(y_reg, X_reg_const).fit()
@@ -302,7 +295,7 @@ def get_model_results(df):
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
 
-# --- PLOTTING FUNCTIONS (No major changes) ---
+# --- PLOTTING FUNCTIONS ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -311,6 +304,7 @@ def plot_hotspots(df):
             showarrow=False
         )
     
+    # This counting now uses the fully consolidated 'Brooklyn' name
     count_data = df['county'].value_counts().reset_index()
     count_data.columns = ['county', 'count'] 
     
@@ -325,8 +319,11 @@ def plot_hotspots(df):
         title='<b>Parking Violation Hotspots by NYC Borough</b>',
         labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
     )
-    fig.update_layout(yaxis={'categoryorder':'total ascending'})
+    # This should now show Brooklyn consolidated and sorted correctly
+    fig.update_layout(yaxis={'categoryorder':'total ascending'}) 
     return fig
+
+# --- REST OF PLOTTING, KPI, and LAYOUT FUNCTIONS (No Change) ---
 
 def plot_rush_hour(df):
     """Generates a bar chart of violations by hour, ordered 0-23."""
@@ -498,7 +495,7 @@ with tab1:
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
-# --- TAB 2: MODELING (UPDATED OLS DISPLAY) ---
+# --- TAB 2: MODELING ---
 with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")

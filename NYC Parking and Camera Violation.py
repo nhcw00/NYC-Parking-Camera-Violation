@@ -36,11 +36,11 @@ COUNTY_MAPPING = {
     'K': 'Brooklyn', 'BK': 'Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
-    'KINGS': 'Brooklyn', # Catching the specific uppercase 'Kings' spelling from raw data
-    'RICH': 'Staten Island', # Catching 'RICH' for Richmond
-    'NEW YORK': 'Manhattan', # Catching full name
+    'KINGS': 'Brooklyn', 
+    'RICH': 'Staten Island', 
+    'NEW YORK': 'Manhattan', 
     None: 'Unknown/Missing', 
-    'NAN': 'Unknown/Missing' # Catching any NaN strings after uppercase
+    'NAN': 'Unknown/Missing'
 }
 
 # --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change) ---
@@ -152,8 +152,8 @@ def create_ols_summary_df(ols_summary):
         'violation_hour': 'Violation Hour',
         'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority',
         'issuing_agency_TRAFFIC': 'Traffic Dept.',
-        'issuing_agency_DEPARTM': 'Police Dept.', # Assuming DEPARTM refers to NYPD or similar
-        'county_Kings': 'Brooklyn', # Consolidate specific lingering codes
+        'issuing_agency_DEPARTM': 'Police Dept.', 
+        'county_Kings': 'Brooklyn', 
     }
     
     # Apply renaming and consolidation logic
@@ -162,14 +162,13 @@ def create_ols_summary_df(ols_summary):
         if idx in name_map:
             new_index.append(name_map[idx])
         elif idx.startswith('county_'):
-            # Strip the 'county_' prefix (e.g., county_Brooklyn -> Brooklyn)
             new_index.append(idx.split('_')[-1]) 
         else:
             new_index.append(idx)
             
     results_df.index = new_index
 
-    # Consolidate any duplicate index rows (like if both 'Brooklyn' and 'Kings' survived, they are averaged)
+    # Consolidate any duplicate index rows 
     results_df = results_df.groupby(results_df.index).mean()
     results_df.index.name = 'Factor'
 
@@ -272,7 +271,7 @@ def get_model_results(df):
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     X_reg_const = sm.add_constant(X_reg)
     ols_model = sm.OLS(y_reg, X_reg_const).fit()
-    ols_summary = ols_model.summary()
+    ols_summary = ols_model.summary() # Keep the full summary object
     
     # 7. Train the FINAL Tuned Model (Decision Tree)
     dt_pipeline = Pipeline(steps=[
@@ -302,7 +301,6 @@ def plot_hotspots(df):
             showarrow=False
         )
     
-    # The count now uses the fully consolidated borough names
     count_data = df['county'].value_counts().reset_index()
     count_data.columns = ['county', 'count'] 
     
@@ -320,7 +318,6 @@ def plot_hotspots(df):
         title='<b>Parking Violation Hotspots by NYC Borough</b>',
         labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
     )
-    # This should now show only the 5 clean boroughs consolidated
     fig.update_layout(yaxis={'categoryorder':'total ascending'}) 
     return fig
 
@@ -505,6 +502,7 @@ with tab2:
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
+    
     # Extract Adj. R-squared directly from the summary string
     adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()
     st.write(f"The OLS Regression has an **Adjusted R-squared of {adj_r_squared}**, meaning the factors below explain this proportion of the variance in the fine amount.")
@@ -513,6 +511,10 @@ with tab2:
     st.dataframe(create_ols_summary_df(ols_summary))
     
     st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
+    
+    # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
+    with st.expander("View Full OLS Regression Output (Raw Statistics)"):
+        st.text(ols_summary.as_text())
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")

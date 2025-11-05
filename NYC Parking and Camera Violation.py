@@ -128,7 +128,7 @@ def load_data():
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION ---
+# --- BACKWARD ELIMINATION FUNCTION (No change) ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
@@ -166,22 +166,18 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     return final_model
 
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (No change) ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display,
     cleaning up feature names for better readability.
     """
-    # Extract the main parameters table (the second table in the summary)
-    # Using read_html is reliable here since the input is ols_summary.tables[1].as_html()
     try:
         results_as_html = ols_summary.tables[1].as_html()
         results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     except (IndexError, ValueError):
-        # Fallback if the table structure is unexpectedly missing
         return pd.DataFrame({"Error": ["Could not parse OLS coefficient table."]})
     
-    # Clean up column names and select relevant columns
     results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
     results_df = results_df[['Coefficient', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']]
     
@@ -277,11 +273,11 @@ def get_model_results(df):
     # 4. Define All Models
     models = {
         "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
+        "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
+        "Decision Tree": DecisionTreeClassifier(random_state=RANDOM_SEED),
         "Naive Bayes": GaussianNB(),
         "KNN": KNeighborsClassifier(), 
-        "Decision Tree": DecisionTreeClassifier(random_state=RANDOM_SEED),
         "Random Forest": RandomForestClassifier(random_state=RANDOM_SEED),
-        "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
     }
 
     # 5. Train, Predict, and Store Results
@@ -313,13 +309,10 @@ def get_model_results(df):
     ols_model = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
     
     if ols_model is None:
-        # Handle case where no significant predictors are left
         ols_summary = "No significant predictors found using backward elimination (P < 0.05)."
-        adj_r_squared_value = "" # No R-squared to display
+        adj_r_squared_value = "" 
     else:
-        # Get the final summary object
         ols_summary = ols_model.summary()
-        # Extract R-squared value directly from the model attribute (robust method)
         adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
     
     # 7. Train the FINAL Tuned Model (Decision Tree)
@@ -336,12 +329,13 @@ def get_model_results(df):
     
     # 8. Return results
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
+    # --- FIX 1: APPLY SORTING BY AUC ---
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
-# --- PLOTTING FUNCTIONS (No changes) ---
+# --- PLOTTING FUNCTIONS ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -482,6 +476,7 @@ with st.spinner('Loading data and training models... This may take a moment on f
     # Calculate KPIs immediately after loading data
     total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
+    # FIX: Ensure all 6 return values are captured
     model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 st.success("Data and models loaded successfully!")
@@ -555,7 +550,7 @@ with tab2:
         st.error(ols_summary)
     else:
         # Display the Adjusted R-squared value
-        st.write(f"The **Optimized OLS Regression** (Adjusted R-squared: **{adj_r_squared_value}**) uses only predictors significant at the $P < 0.05$ level.")
+        st.write(f"The **The Optimized Ordinary Least Squares (OLS) Regression model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an Adjusted $R^2$ of {adj_r_squared_value}. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable")
         
         # Display the clean, styled OLS table
         st.dataframe(create_ols_summary_df(ols_summary))
@@ -568,6 +563,14 @@ with tab2:
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
+    
+    # FIX: Define the required column order
+    CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
+    
+    # Ensure the DataFrame has the correct columns before reindexing
+    if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
+        model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
+    
     st.dataframe(model_results_df.style.format("{:.4f}"))
     
     st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")

@@ -15,8 +15,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
-import numpy as np 
-from lxml import etree 
+import numpy as np
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -27,7 +26,7 @@ st.set_page_config(
 
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
-YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
+YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl"
 P_VALUE_THRESHOLD = 0.05 # Significance level for elimination
 
 # --- COUNTY MAPPING (Consolidated) ---
@@ -37,10 +36,10 @@ COUNTY_MAPPING = {
     'K': 'Brooklyn', 'BK': 'Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
-    'KINGS': 'Brooklyn', 
-    'RICH': 'Staten Island', 
-    'NEW YORK': 'Manhattan', 
-    None: 'Unknown/Missing', 
+    'KINGS': 'Brooklyn',
+    'RICH': 'Staten Island',
+    'NEW YORK': 'Manhattan',
+    None: 'Unknown/Missing',
     'NAN': 'Unknown/Missing'
 }
 
@@ -51,20 +50,20 @@ BOROUGH_COORDINATES = {
     'Brooklyn': (40.6782, -73.9442),
     'Bronx': (40.8448, -73.8648),
     'Staten Island': (40.5790, -74.1519),
-    'Unknown/Missing': (40.730610, -73.935242) 
+    'Unknown/Missing': (40.730610, -73.935242)
 }
 
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
-    
+
     # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
-    headers = {} 
+    headers = {}
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
-    
+
     # MINIMAL QUERY: Only include the $limit parameter.
-    params = {'$limit': 50000} 
+    params = {'$limit': 50000}
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -92,7 +91,7 @@ def load_data():
     for col in numeric_cols:
         if col in df_processed.columns:
             df_processed[col] = pd.to_numeric(
-                df_processed[col].astype(str).str.replace(r'[$,]', '', regex=True), 
+                df_processed[col].astype(str).str.replace(r'[$,]', '', regex=True),
                 errors='coerce'
             )
 
@@ -104,23 +103,23 @@ def load_data():
     # 24-HOUR TIME FIX (Robust version)
     time_parts = df_processed['violation_time'].str.extract(r'(\d{2}).*?([AP])')
     time_parts.columns = ['hour', 'ampm']
-    time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce') 
+    time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce')
     time_parts.dropna(subset=['hour', 'ampm'], inplace=True)
 
     # Align the dataframe with the successfully parsed time values
-    df_processed = df_processed.loc[time_parts.index] 
+    df_processed = df_processed.loc[time_parts.index]
     hour_int = time_parts['hour'].astype(int)
     ampm = time_parts['ampm']
-    
+
     df_processed['violation_hour'] = hour_int
     df_processed.loc[(ampm == 'P') & (hour_int != 12), 'violation_hour'] = hour_int + 12
-    df_processed.loc[(ampm == 'A') & (hour_int == 12), 'violation_hour'] = 0 
+    df_processed.loc[(ampm == 'A') & (hour_int == 12), 'violation_hour'] = 0
     df_processed.dropna(subset=['violation_hour'], inplace=True)
 
     # Feature Engineering: 'is_paid'
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
-    
+
     # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
     df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
@@ -136,37 +135,37 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     # Start with all predictors
     X_cols = list(X_data.columns)
-    
+
     while len(X_cols) > 0:
         X = X_data[X_cols]
         # Add constant and fit the model
         X_opt = sm.add_constant(X)
         model = sm.OLS(y_data, X_opt).fit()
-        
+
         # Get P-values, excluding the intercept (const)
         p_values = model.pvalues.iloc[1:]
-        
+
         # Find the predictor with the highest P-value
         max_p_value = p_values.max()
         max_p_col = p_values.idxmax()
-        
+
         # If the highest P-value is below the threshold, stop
         if max_p_value < significance_level:
             break
-        
+
         # If the highest P-value is above the threshold, remove that predictor
         X_cols.remove(max_p_col)
-        
+
     # Return the final model summary after elimination
     if len(X_cols) == 0:
         return None
-    
+
     X_final = sm.add_constant(X_data[X_cols])
     final_model = sm.OLS(y_data, X_final).fit()
     return final_model
 
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (No change) ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display,
@@ -177,35 +176,43 @@ def create_ols_summary_df(ols_summary):
         results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     except (IndexError, ValueError):
         return pd.DataFrame({"Error": ["Could not parse OLS coefficient table."]})
-    
+
     results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
     results_df = results_df[['Coefficient', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']]
-    
-    # Clean up index names for clarity
+
+    # FIX 2: Corrected the names in the map for robustness with OLS output
     name_map = {
         'const': 'Baseline Fine (Intercept)',
         'violation_hour': 'Violation Hour',
         'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority',
         'issuing_agency_TRAFFIC': 'Traffic Dept.',
-        'issuing_agency_DEPARTM': 'Police Dept.', 
-        'county_Kings': 'Brooklyn', 
+        # Corrected OLS names (which include one-hot encoded categories)
+        'issuing_agency_DEPARTMENT OF TRANSPORTATION': 'Department of Transportation',
+        'issuing_agency_POLICE DEPARTMENT': 'Police Department',
+        'issuing_agency_PARKS DEPARTMENT': 'Parks Department',
+        'county_Brooklyn': 'Brooklyn',
+        'county_Bronx': 'Bronx',
+        'county_Manhattan': 'Manhattan',
+        'county_Queens': 'Queens',
+        'county_Staten Island': 'Staten Island',
+        'county_Unknown/Missing': 'Unknown/Missing County',
     }
-    
+
     # Apply renaming and consolidation logic
     new_index = []
     for idx in results_df.index:
         if idx in name_map:
             new_index.append(name_map[idx])
         elif idx.startswith('county_'):
-            new_index.append(idx.split('_')[-1]) 
+            new_index.append(idx.split('_')[-1])
         elif idx.startswith('issuing_agency_'):
             new_index.append(idx.split('_')[-1])
         else:
             new_index.append(idx)
-            
+
     results_df.index = new_index
 
-    # Consolidate any duplicate index rows 
+    # Consolidate any duplicate index rows
     results_df = results_df.groupby(results_df.index).mean()
     results_df.index.name = 'Factor'
 
@@ -225,33 +232,33 @@ def create_ols_summary_df(ols_summary):
             'CI Lower (2.5%)': "{:.2f}",
             'CI Upper (97.5%)': "{:.2f}"
         })
-    
+
     return styled_df
 
 
 @st.cache_resource
 def get_model_results(df):
     """Trains classification models and runs OLS regression."""
-    
+
     # 1. Balance the Data
     min_class_size = df['is_paid'].value_counts().min()
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
-    
+
     max_samples_per_class = 5000
-    
+
     paid_df = df[df['is_paid'] == 1]
     unpaid_df = df[df['is_paid'] == 0]
-    
+
     actual_sample_size = min(len(paid_df), len(unpaid_df), max_samples_per_class)
-    
+
     paid_df = paid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     unpaid_df = unpaid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     class_df = pd.concat([paid_df, unpaid_df])
 
     st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
-    # 2. Define Preprocessor 
+    # 2. Define Preprocessor
     y_class = class_df['is_paid']
     X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
     categorical_features = ['county', 'issuing_agency']
@@ -273,10 +280,10 @@ def get_model_results(df):
     # 4. Define All Models
     models = {
         "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
-        "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
+        "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True),
         "Decision Tree": DecisionTreeClassifier(random_state=RANDOM_SEED),
         "Naive Bayes": GaussianNB(),
-        "KNN": KNeighborsClassifier(), 
+        "KNN": KNeighborsClassifier(),
         "Random Forest": RandomForestClassifier(random_state=RANDOM_SEED),
     }
 
@@ -300,38 +307,38 @@ def get_model_results(df):
             'F1-Score (W)': report_dict['weighted avg']['f1-score'],
             'F1-Score (Paid)': report_dict['Paid']['f1-score']
         }
-    
+
     # 6. Run OLS Regression with Backward Elimination
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
-    
+
     ols_model = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
-    
+
     if ols_model is None:
         ols_summary = "No significant predictors found using backward elimination (P < 0.05)."
-        adj_r_squared_value = "" 
+        adj_r_squared_value = ""
     else:
         ols_summary = ols_model.summary()
         adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
-    
+
     # 7. Train the FINAL Tuned Model (Decision Tree)
     dt_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('classifier', DecisionTreeClassifier(
-            criterion='entropy', 
-            max_depth=10, 
-            min_samples_leaf=1, 
+            criterion='entropy',
+            max_depth=10,
+            min_samples_leaf=1,
             random_state=RANDOM_SEED
         ))
     ])
     dt_pipeline.fit(X_train, y_train)
-    
+
     # 8. Return results
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     # --- FIX 1: APPLY SORTING BY AUC ---
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
-    
+
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -343,10 +350,10 @@ def plot_hotspots(df):
             text="County data is not available or entirely null after cleaning.",
             showarrow=False
         )
-    
+
     count_data = df['county'].value_counts().reset_index()
-    count_data.columns = ['county', 'count'] 
-    
+    count_data.columns = ['county', 'count']
+
     # Ensure 'Unknown/Missing' is excluded from the visible chart
     count_data = count_data[count_data['county'] != 'Unknown/Missing']
 
@@ -355,20 +362,20 @@ def plot_hotspots(df):
             text="No non-missing violations found to plot by county.",
             showarrow=False
         )
-        
+
     fig = px.bar(
         count_data, x='count', y='county', orientation='h',
         title='<b>Parking Violation Hotspots by NYC Borough</b>',
         labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
     )
-    fig.update_layout(yaxis={'categoryorder':'total ascending'}) 
+    fig.update_layout(yaxis={'categoryorder':'total ascending'})
     return fig
 
 def plot_rush_hour(df):
     """Generates a bar chart of violations by hour, ordered 0-23."""
     count_data = df['violation_hour'].value_counts().reset_index()
     count_data.columns = ['violation_hour', 'count']
-    
+
     fig = px.bar(
         count_data, x='violation_hour', y='count',
         title='<b>Parking Violation "Rush Hour"</b>',
@@ -384,7 +391,7 @@ def plot_unpaid_heatmap(df):
             text="No data available for Unpaid Heatmap.",
             showarrow=False
         )
-        
+
     df_unpaid = df[df['is_paid'] == 0]
     pivot_data = df_unpaid.pivot_table(
         index='county', columns='violation_hour', aggfunc='size', fill_value=0
@@ -401,14 +408,14 @@ def plot_unpaid_heatmap(df):
 def plot_roc_curves(roc_results):
     fig = go.Figure()
     fig.add_shape(type='line', line=dict(dash='dash'), x0=0, x1=1, y0=0, y1=1)
-    
+
     for name, result in roc_results.items():
         fig.add_trace(go.Scatter(
-            x=result['fpr'], y=result['tpr'], 
+            x=result['fpr'], y=result['tpr'],
             name=f"{name} (AUC = {result['auc']:.4f})",
             mode='lines'
         ))
-    
+
     fig.update_layout(
         title='<b>ROC Curve Comparison</b>',
         xaxis_title='False Positive Rate',
@@ -419,45 +426,45 @@ def plot_roc_curves(roc_results):
 
 def plot_map_hotspots(df):
     """Creates an aggregated map of violation counts by central borough coordinates."""
-    
+
     map_df = df['county'].value_counts().reset_index()
     map_df.columns = ['county', 'count']
-    
+
     # Exclude Unknown/Missing from the map plot
     map_df = map_df[map_df['county'] != 'Unknown/Missing']
 
     # 1. Map the County names to their predefined center coordinates
     map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
-    
+
     # 2. Prepare the map data required by st.map
     map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
-    
+
     # 3. Streamlit Map (Simple Scatter/Bubble Map)
     st.markdown("#### Violation Hotspots by Borough (Aggregated Center Points)")
     st.write("This map visualizes the total violation counts aggregated at the center point of each borough.")
-    
-    st.map(map_data, 
+
+    st.map(map_data,
            latitude=40.73, # Center of map
-           longitude=-73.95, 
-           zoom=10, 
+           longitude=-73.95,
+           zoom=10,
            size='size', # Use violation count for bubble size
            color='#d80000' # Red color for violations
-          )
-    
+           )
+
 # --- KPI CALCULATION FUNCTION (No change) ---
 def calculate_kpis(df):
     """Calculates key metrics for the dashboard."""
     total_violations = len(df)
-    
+
     # Calculate revenue metrics (using only fine_amount since others might be missing)
     total_fines = df['fine_amount'].sum()
     avg_fine = df['fine_amount'].mean()
-    
+
     # Calculate payment success rate
     paid_count = df['is_paid'].sum()
     paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
-    
+
     return total_violations, total_fines, avg_fine, paid_rate
 
 # --- STREAMLIT APP LAYOUT ---
@@ -468,11 +475,11 @@ st.write("This app analyzes the NYC Parking Violations dataset to find hotspots,
 # Load all data and models (will be cached)
 with st.spinner('Loading data and training models... This may take a moment on first run.'):
     df_processed = load_data()
-    
+
     if df_processed.empty:
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
-        
+
     # Calculate KPIs immediately after loading data
     total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
@@ -483,35 +490,35 @@ st.success("Data and models loaded successfully!")
 
 # Create Tabs for the Story
 tab1, tab2, tab3 = st.tabs([
-    "1. The 'Setting' (Exploratory Analysis)", 
-    "2. The 'Climax' (Predictive Modeling)", 
+    "1. The 'Setting' (Exploratory Analysis)",
+    "2. The 'Climax' (Predictive Modeling)",
     "3. The 'Solution' (Live Prediction Tool)"
 ])
 
 # --- TAB 1: EDA ---
 with tab1:
     st.header("1. Data Overview and Key Metrics")
-    
+
     # --- KPI SECTION ---
     kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-    
+
     with kpi_col1:
-        st.metric(label="Total Violations (Sample)", 
+        st.metric(label="Total Violations (Sample)",
                   value=f"{total_violations:,}")
-    
+
     with kpi_col2:
-        st.metric(label="Total Fine Value (Sample)", 
+        st.metric(label="Total Fine Value (Sample)",
                   value=f"${total_fines:,.0f}")
-    
+
     with kpi_col3:
-        st.metric(label="Average Fine Amount", 
+        st.metric(label="Average Fine Amount",
                   value=f"${avg_fine:.2f}")
 
     with kpi_col4:
-        st.metric(label="Paid Rate (Sampled)", 
+        st.metric(label="Paid Rate (Sampled)",
                   value=f"{paid_rate:.1f}%")
-        
-    st.markdown("---") 
+
+    st.markdown("---")
 
     # --- DATA SAMPLE VIEWER ---
     with st.expander("View Raw Data Sample (First 1,000 Rows)"):
@@ -519,21 +526,21 @@ with tab1:
 
     st.header("2. Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
-    
+
     # Street-level map is disabled
     st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400).")
-    st.markdown("---") 
+    st.markdown("---")
 
     # AGGREGATED BAR CHART and MAP
     plot_map_hotspots(df_processed)
-    st.markdown("---") 
-    
+    st.markdown("---")
+
     col1, col2 = st.columns(2)
     with col1:
         st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
     with col2:
         st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
-        
+
     st.header("3. Where and When are Violations *Unpaid*?")
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
@@ -542,37 +549,37 @@ with tab1:
 with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
-    
+
     st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
-    
+
     if isinstance(ols_summary, str):
         # Handle the case where no significant predictors were found
         st.error(ols_summary)
     else:
-        # Display the Adjusted R-squared value
-        st.write(f"The **The Optimized Ordinary Least Squares (OLS) Regression model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an Adjusted $R^2$ of {adj_r_squared_value}. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable")
-        
+        # FIX 1: Corrected the syntax error (missing closing brace }) in the f-string
+        st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable.")
+
         # Display the clean, styled OLS table
         st.dataframe(create_ols_summary_df(ols_summary))
-        
+
         st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-        
+
         # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
         with st.expander("View Full OLS Regression Output (Raw Statistics)"):
             st.text(ols_summary.as_text())
-    
+
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
-    
+
     # FIX: Define the required column order
     CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
-    
+
     # Ensure the DataFrame has the correct columns before reindexing
     if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
         model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
-    
+
     st.dataframe(model_results_df.style.format("{:.4f}"))
-    
+
     st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
     st.plotly_chart(plot_roc_curves(roc_results), use_container_width=True)
 
@@ -585,12 +592,13 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
+            # Dropdown options are based on the unique values in the processed data
             county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
             issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
         with col2:
             violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
             fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
-        
+
         submitted = st.form_submit_button("Predict Payment Status")
 
     if submitted:
@@ -598,10 +606,10 @@ with tab3:
             [[fine_amount, county, issuing_agency, violation_hour]],
             columns=['fine_amount', 'county', 'issuing_agency', 'violation_hour']
         )
-        
+
         prediction = best_model.predict(input_data)[0]
         prediction_proba = best_model.predict_proba(input_data)[0]
-        
+
         # Display the result
         if prediction == 1:
             st.success(f"**Prediction: PAID** (Probability: {prediction_proba[1]:.1%})")

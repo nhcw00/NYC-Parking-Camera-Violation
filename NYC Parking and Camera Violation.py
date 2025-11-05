@@ -478,12 +478,12 @@ st.write("This app analyzes the NYC Parking Violations dataset to find hotspots,
 with st.spinner('Loading data and training models... This may take a moment on first run.'):
     df_processed = load_data()
 
-# --- CRITICAL GUARD CLAUSE ---
+# --- CRITICAL GUARD CLAUSE (Revised) ---
 # Check if the required data columns exist before proceeding with the complex UI logic
 required_cols = ['county', 'issuing_agency', 'violation_hour', 'fine_amount', 'is_paid']
 if df_processed.empty or not all(col in df_processed.columns for col in required_cols):
     st.error("Cannot run the application: Data loading failed or essential columns are missing after cleaning. Please verify the SODA API URL and data availability.")
-    st.stop() # <-- THIS IS THE CRITICAL LINE TO PREVENT THE TYPE ERROR ON RELOAD
+    st.stop() # <-- Halt execution if data is invalid
 
 # --- INITIALIZE APP RESOURCES (ONLY RUNS IF DATA IS VALID) ---
 st.success("Data and models loaded successfully!")
@@ -596,9 +596,13 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # This line is now protected by the st.stop() guard clause
-            county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
-            issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
+            # --- FINAL FIX: Use a defensive list comprehension to prevent failure on empty data ---
+            # If df_processed is valid, it gets unique values. If not, it defaults to a list with one item.
+            county_options = sorted(df_processed['county'].unique()) if 'county' in df_processed.columns else ['Unknown']
+            issuing_agency_options = sorted(df_processed['issuing_agency'].unique()) if 'issuing_agency' in df_processed.columns else ['Unknown']
+            
+            county = st.selectbox("Select County:", options=county_options)
+            issuing_agency = st.selectbox("Select Issuing Agency:", options=issuing_agency_options)
         with col2:
             violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
             fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)

@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-# from geopy.geocoders import Nominatim # NO LONGER NEEDED (Geocoding removed for stability)
+from geopy.geocoders import Nominatim # Re-introduced for street-level mapping
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -29,7 +29,7 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
-# --- COUNTY MAPPING ---
+# --- COUNTY MAPPING and GEOGRAPHICAL CONSTANTS (No change) ---
 COUNTY_MAPPING = {
     'NY': 'Manhattan (New York)', 'MN': 'Manhattan (New York)',
     'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
@@ -39,7 +39,6 @@ COUNTY_MAPPING = {
     None: 'Unknown/Missing' 
 }
 
-# --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
 BOROUGH_COORDINATES = {
     'Manhattan (New York)': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
@@ -49,20 +48,55 @@ BOROUGH_COORDINATES = {
     'Unknown/Missing': (40.730610, -73.935242) 
 }
 
-# --- REMOVING GEOCODING FUNCTIONALITY ---
-# The geocoding functionality must be removed to restore stability.
-# The street-level map section will now only display a message.
+# --- CACHED GEOCODING FUNCTION (Re-enabled) ---
+@st.cache_data
+def geocode_sample_data(sample_df):
+    """Geocodes a small sample of tickets using a public service (Nominatim)."""
+    st.info("Attempting to geocode a small sample (500 tickets) for street-level map...")
+    try:
+        geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
+    except Exception:
+        st.error("Geocoding service unavailable. Skipping street-level map.")
+        return pd.DataFrame()
+
+    def get_address(row):
+        # We rely on the API returning 'street_name' and 'house_number'
+        house = str(row.get('house_number', '')).split('-')[0]
+        street = row.get('street_name', '')
+        county = row.get('county', 'NY')
+        return f"{house} {street}, New York, {county}"
+        
+    sample_df['address'] = sample_df.apply(get_address, axis=1)
+    
+    def geocode_single(address):
+        try:
+            location = geolocator.geocode(address, timeout=5)
+            if location:
+                return (location.latitude, location.longitude)
+        except Exception:
+            return (None, None)
+        return (None, None)
+
+    # Limit geocoding to the first 500 rows for safety and speed.
+    geocoded_coords = sample_df['address'].head(500).apply(geocode_single)
+    
+    sample_df.loc[geocoded_coords.index, 'lat'] = geocoded_coords.apply(lambda x: x[0])
+    sample_df.loc[geocoded_coords.index, 'lon'] = geocoded_coords.apply(lambda x: x[1])
+
+    sample_df.dropna(subset=['lat', 'lon'], inplace=True)
+    return sample_df[['lat', 'lon', 'fine_amount']].rename(columns={'fine_amount': 'size'})
+
 
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
-    # --- FINAL FIX: ONLY USE $limit to guarantee a successful 200 response ---
+    # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # MINIMAL QUERY: Only include the $limit parameter.
+    # Query relies on the API's default columns. 
     params = {'$limit': 50000} 
 
     try:
@@ -72,7 +106,7 @@ def load_data():
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
         elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). The API server rejected the request. Please verify the dataset URL.")
+             st.error("Error loading data. Status Code: 400 (Bad Request). Check dataset URL or server limits.")
              return pd.DataFrame()
         else:
             st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
@@ -84,8 +118,7 @@ def load_data():
     df_processed = df.copy()
 
     # Data Cleaning and Type Conversion
-    # Dropping columns that may or may not have been returned by the API default.
-    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location', 'street_name', 'house_number']
+    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location']
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
     numeric_cols = ['fine_amount']
@@ -125,6 +158,8 @@ def load_data():
     df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
 
     return df_processed
+
+# ... (get_model_results, plot_hotspots, plot_rush_hour, plot_unpaid_heatmap, plot_roc_curves functions remain the same) ...
 
 @st.cache_resource
 def get_model_results(df):
@@ -362,7 +397,7 @@ with tab1:
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
     
     # STREET-LEVEL MAP SECTION removed for stability.
-    st.warning("Street-level mapping feature temporarily disabled due to recurring API errors (Status 400).")
+    st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400) and lack of direct coordinate data.")
     st.markdown("---") 
 
     # AGGREGATED BAR CHART

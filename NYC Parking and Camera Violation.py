@@ -54,26 +54,19 @@ BOROUGH_COORDINATES = {
 def geocode_sample_data(sample_df):
     """Geocodes a small sample of tickets using a public service (Nominatim)."""
     st.info("Attempting to geocode a small sample for street-level map visualization...")
-    # Using a try/except block just in case Nominatim service is unavailable
     try:
         geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
     except Exception:
         st.error("Geocoding service unavailable. Skipping street-level map.")
         return pd.DataFrame()
 
-    # Clean and combine address components
     def get_address(row):
+        # Must handle missing keys gracefully in case API returns fewer columns
         house = str(row.get('house_number', '')).split('-')[0]
         street = row.get('street_name', '')
         county = row.get('county', 'NY')
         return f"{house} {street}, New York, {county}"
         
-    # We must ensure all required columns exist before applying
-    required_geo_cols = ['house_number', 'street_name', 'county']
-    if not all(col in sample_df.columns for col in required_geo_cols):
-         st.error("Geocoding failed: Required columns (house_number, street_name) not present in API data.")
-         return pd.DataFrame()
-
     sample_df['address'] = sample_df.apply(get_address, axis=1)
     
     def geocode_single(address):
@@ -100,15 +93,14 @@ def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
-    # --- DIAGNOSTIC FIX: REMOVING TOKEN FROM HEADER TO TEST FOR 400 ERROR CAUSE ---
-    headers = {} # Token removed for diagnostic test
+    # --- DIAGNOSTIC FIX: REMOVING TOKEN FROM HEADER AND SIMPLIFYING QUERY ---
+    headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # PARAMETERS: Raised limit to 50,000
-    # Included required geo fields for mapping later
+    # FIX: Minimal $select list to avoid 400 error caused by long URL parameter string
     params = {
         '$limit': 50000, 
-        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, street_name, house_number'
+        '$select': 'issue_date, violation_time, violation_status, fine_amount, county, issuing_agency, street_name, house_number'
     } 
 
     try:
@@ -118,7 +110,7 @@ def load_data():
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
         elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). This strongly suggests an invalid API URL, an unresolvable parameter, or a blocked request.")
+             st.error("Error loading data. Status Code: 400 (Bad Request). The API request URL is likely too complex or long. Try simplifying the query further.")
              return pd.DataFrame()
         else:
             st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
@@ -129,11 +121,11 @@ def load_data():
 
     df_processed = df.copy()
 
-    # Data Cleaning and Type Conversion
-    columns_to_drop = ['plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type']
+    # Data Cleaning (Dropping columns we DID NOT request, relying on API returning what we asked for)
+    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type']
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
-    numeric_cols = ['fine_amount', 'penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due']
+    numeric_cols = ['fine_amount']
     for col in numeric_cols:
         if col in df_processed.columns:
             df_processed[col] = pd.to_numeric(
@@ -269,7 +261,7 @@ def get_model_results(df):
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
-# --- PLOTTING FUNCTIONS ---
+# --- PLOTTING FUNCTIONS (No changes here) ---
 
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
@@ -360,7 +352,6 @@ def plot_map_hotspots(df):
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
     
     # 2. Prepare the map data required by st.map
-    # Renaming columns to Streamlit's required lowercase 'lat' and 'lon'
     map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
     
     # 3. Streamlit Map (Simple Scatter/Bubble Map)
@@ -373,6 +364,28 @@ def plot_map_hotspots(df):
            zoom=10, 
            size='size', # Use violation count for bubble size
            color='#d80000' # Red color for violations
+          )
+    
+# --- NEW FUNCTION: STREET-LEVEL MAP HOTSPOTS ---
+def plot_street_level_hotspots(df):
+    """Uses geocoding to plot an actual street-level map."""
+    
+    st.markdown("#### Street-Level Violation Hotspots (Sampled & Geocoded)")
+    st.write("This map uses the street address data of a small sample (500 tickets) and converts them to coordinates. **Bubbles represent individual tickets.**")
+    
+    # Geocoding function is cached
+    st_level_map_data = geocode_sample_data(df.copy())
+
+    if st_level_map_data.empty or 'lat' not in st_level_map_data.columns:
+        st.error("Street-level mapping failed: Could not geocode sample data.")
+        return
+    
+    st.map(st_level_map_data, 
+           latitude='lat', 
+           longitude='lon', 
+           zoom=11, 
+           size='size', # Optional: Use fine amount for bubble size
+           color='#d80000'
           )
     
 # --- STREAMLIT APP LAYOUT ---
@@ -388,7 +401,6 @@ with st.spinner('Loading data and training models... This may take a moment on f
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
         
-    # --- Geocoding must be skipped if data is empty ---
     st_level_map_data = pd.DataFrame()
     if 'street_name' in df_processed.columns and 'house_number' in df_processed.columns:
         st_level_map_data = geocode_sample_data(df_processed.copy())
@@ -411,15 +423,7 @@ with tab1:
     
     # STREET-LEVEL MAP SECTION
     if not st_level_map_data.empty:
-        st.markdown("#### Street-Level Violation Hotspots (Sampled & Geocoded)")
-        st.write("This map uses the street address data of a small sample (500 tickets) and converts them to coordinates. **Bubbles represent individual tickets.**")
-        st.map(st_level_map_data, 
-               latitude='lat', 
-               longitude='lon', 
-               zoom=11, 
-               size='size', 
-               color='#d80000'
-              )
+        plot_street_level_hotspots(df_processed)
         st.markdown("---")
     else:
         st.warning("Skipping street-level map visualization due to data loading or geocoding failure.")

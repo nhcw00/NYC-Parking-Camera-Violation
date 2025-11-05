@@ -31,9 +31,14 @@ YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl"
 
 # --- COUNTY MAPPING ---
 COUNTY_MAPPING = {
-    'NY': 'Manhattan', 'MN': 'Manhattan',
-    'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
-    'K': 'Brooklyn', 'BK': 'Brooklyn', # Simplifying names here
+    'NY': 'Manhattan', 
+    'MN': 'Manhattan',
+    'Q': 'Queens', 
+    'QN': 'Queens', 
+    'QNS': 'Queens',
+    'K': 'Brooklyn', 
+    'BK': 'Brooklyn',
+    'Kings': "Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
     None: 'Unknown/Missing' 

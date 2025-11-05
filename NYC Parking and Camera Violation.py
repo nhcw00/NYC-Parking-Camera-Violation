@@ -503,14 +503,7 @@ with tab2:
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
     
-    # Display the clean, styled OLS table
-    st.dataframe(create_ols_summary_df(ols_summary))
     
-    st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-    
-    # --- RESTORING FULL OLS SUMMARY IN EXPANDER (CURRENT CODE) ---
-    with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-        st.text(ols_summary.as_text()) # <--- You need to click this to see the text
     
     # Extract Adj. R-squared directly from the summary string
     adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()

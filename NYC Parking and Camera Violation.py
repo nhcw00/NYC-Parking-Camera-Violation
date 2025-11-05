@@ -62,6 +62,7 @@ def geocode_sample_data(sample_df):
 
     def get_address(row):
         # Must handle missing keys gracefully in case API returns fewer columns
+        # Note: We rely on the API returning 'street_name' and 'house_number'
         house = str(row.get('house_number', '')).split('-')[0]
         street = row.get('street_name', '')
         county = row.get('county', 'NY')
@@ -93,15 +94,12 @@ def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
-    # --- DIAGNOSTIC FIX: REMOVING TOKEN FROM HEADER AND SIMPLIFYING QUERY ---
+    # --- DIAGNOSTIC FIX: REMOVING ALL PARAMETERS EXCEPT $limit ---
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # FIX: Minimal $select list to avoid 400 error caused by long URL parameter string
-    params = {
-        '$limit': 50000, 
-        '$select': 'issue_date, violation_time, violation_status, fine_amount, county, issuing_agency, street_name, house_number'
-    } 
+    # FIX: Only include the $limit parameter to ensure the simplest possible API request.
+    params = {'$limit': 50000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -110,7 +108,7 @@ def load_data():
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
         elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). The API request URL is likely too complex or long. Try simplifying the query further.")
+             st.error("Error loading data. Status Code: 400 (Bad Request). The API server rejected the request. Please verify the dataset URL.")
              return pd.DataFrame()
         else:
             st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
@@ -121,8 +119,9 @@ def load_data():
 
     df_processed = df.copy()
 
-    # Data Cleaning (Dropping columns we DID NOT request, relying on API returning what we asked for)
-    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type']
+    # Data Cleaning and Type Conversion
+    # We now drop all columns that we didn't use in the simplified $select
+    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location']
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
     numeric_cols = ['fine_amount']
@@ -402,7 +401,8 @@ with st.spinner('Loading data and training models... This may take a moment on f
         st.stop()
         
     st_level_map_data = pd.DataFrame()
-    if 'street_name' in df_processed.columns and 'house_number' in df_processed.columns:
+    # Check if necessary columns for geocoding were returned by the simplified API call
+    if all(col in df_processed.columns for col in ['street_name', 'house_number']):
         st_level_map_data = geocode_sample_data(df_processed.copy())
 
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
@@ -426,7 +426,7 @@ with tab1:
         plot_street_level_hotspots(df_processed)
         st.markdown("---")
     else:
-        st.warning("Skipping street-level map visualization due to data loading or geocoding failure.")
+        st.warning("Skipping street-level map visualization because location data was not available or geocoding failed.")
 
     # AGGREGATED BAR CHART
     plot_map_hotspots(df_processed)

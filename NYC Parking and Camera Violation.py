@@ -27,6 +27,22 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
+# --- FIX 1: COUNTY MAPPING ---
+COUNTY_MAPPING = {
+    'NY': 'Manhattan (New York)',
+    'MN': 'Manhattan (New York)',
+    'Q': 'Queens',
+    'QN': 'Queens',
+    'QNS': 'Queens',
+    'K': 'Brooklyn (Kings)',
+    'BK': 'Brooklyn (Kings)',
+    'BX': 'Bronx',
+    'R': 'Staten Island (Richmond)',
+    'ST': 'Staten Island (Richmond)',
+    # Include a default for clarity if other codes exist
+    None: 'Unknown/Missing' 
+}
+
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
@@ -35,7 +51,6 @@ def load_data():
     headers = {"X-App-Token": YOUR_APP_TOKEN}
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # CORRECTED PARAMETER: Use dictionary mapping and $select
     params = {
         '$limit': 5000,
         '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type'
@@ -93,6 +108,10 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
+    # --- FIX 1 APPLICATION: MAP COUNTY CODES TO NAMES ---
+    # Apply the mapping before returning the data
+    df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
+
     return df_processed
 
 @st.cache_resource
@@ -104,23 +123,20 @@ def get_model_results(df):
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
     
-    # Due to data limits, we use a maximum of 10,000 samples total (5k paid, 5k unpaid) if available.
     max_samples_per_class = 5000
     
     paid_df = df[df['is_paid'] == 1]
     unpaid_df = df[df['is_paid'] == 0]
     
-    # Determine the actual size to sample from the smaller class (up to max_samples_per_class)
     actual_sample_size = min(len(paid_df), len(unpaid_df), max_samples_per_class)
     
-    # Sample the data to create the balanced class_df
     paid_df = paid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     unpaid_df = unpaid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     class_df = pd.concat([paid_df, unpaid_df])
 
     st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
-    # 2. Define Preprocessor
+    # 2. Define Preprocessor (Features are already cleaned/mapped by load_data)
     y_class = class_df['is_paid']
     X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
     categorical_features = ['county', 'issuing_agency']
@@ -199,43 +215,42 @@ def get_model_results(df):
 # --- PLOTTING FUNCTIONS ---
 
 def plot_hotspots(df):
-    """Generates a bar chart of violations by county, with robustness checks. (Pandas Compatible)"""
+    """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
         return go.Figure().add_annotation(
             text="County data is not available or entirely null after cleaning.",
             showarrow=False
         )
     
-    # PANDAS COMPATIBILITY FIX APPLIED HERE
     count_data = df['county'].value_counts().reset_index()
-    count_data.columns = ['county', 'count'] # Correct, compatible way to rename columns
+    count_data.columns = ['county', 'count'] 
     
     if count_data.empty:
         return go.Figure().add_annotation(
             text="No violations found to plot by county.",
             showarrow=False
         )
-
+        
     fig = px.bar(
         count_data, x='count', y='county', orientation='h',
-        title='<b>Parking Violation Hotspots by County</b>',
-        labels={'count': 'Number of Violations', 'county': 'County (Borough)'}
+        title='<b>Parking Violation Hotspots by NYC Borough</b>',
+        labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
     )
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
     return fig
 
 def plot_rush_hour(df):
-    """Generates a bar chart of violations by hour. (Pandas Compatible)"""
-    # PANDAS COMPATIBILITY FIX APPLIED HERE
+    """Generates a bar chart of violations by hour, ordered 0-23. (FIX 2)"""
     count_data = df['violation_hour'].value_counts().reset_index()
-    count_data.columns = ['violation_hour', 'count'] # Correct, compatible way to rename columns
+    count_data.columns = ['violation_hour', 'count']
     
     fig = px.bar(
         count_data, x='violation_hour', y='count',
         title='<b>Parking Violation "Rush Hour"</b>',
         labels={'count': 'Number of Violations', 'violation_hour': 'Hour of the Day (0-23)'}
     )
-    fig.update_xaxes(type='category', dtick=1)
+    # FIX 2: Set the x-axis type to 'category' and ensure all integers 0-23 are displayed
+    fig.update_xaxes(type='category', categoryorder='category ascending', dtick=1)
     return fig
 
 def plot_unpaid_heatmap(df):
@@ -252,8 +267,8 @@ def plot_unpaid_heatmap(df):
     )
     fig = px.imshow(
         pivot_data,
-        title='<b>Heatmap of Unpaid Violations by County and Hour</b>',
-        labels={'x': 'Hour of the Day', 'y': 'County', 'color': 'Unpaid Tickets'},
+        title='<b>Heatmap of Unpaid Violations by Borough and Hour</b>',
+        labels={'x': 'Hour of the Day', 'y': 'Borough (County)', 'color': 'Unpaid Tickets'},
         aspect="auto"
     )
     fig.update_xaxes(dtick=1)
@@ -310,12 +325,15 @@ with tab1:
     
     col1, col2 = st.columns(2)
     with col1:
+        # Now plots with full borough names
         st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
     with col2:
+        # Now plots with hours 0-23 in correct order
         st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
         
     st.header("The 'Rising Insight': Where and When are Violations *Unpaid*?")
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
+    # Now plots with full borough names
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
 # --- TAB 2: MODELING ---
@@ -344,6 +362,7 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
+            # Dropdown options reflect the new, cleaned full names
             county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
             issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
         with col2:

@@ -16,7 +16,6 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-from geopy.geocoders import Nominatim # Re-introduced for street-level mapping
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -29,7 +28,7 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
-# --- COUNTY MAPPING and GEOGRAPHICAL CONSTANTS (No change) ---
+# --- COUNTY MAPPING ---
 COUNTY_MAPPING = {
     'NY': 'Manhattan (New York)', 'MN': 'Manhattan (New York)',
     'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
@@ -39,6 +38,7 @@ COUNTY_MAPPING = {
     None: 'Unknown/Missing' 
 }
 
+# --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
 BOROUGH_COORDINATES = {
     'Manhattan (New York)': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
@@ -47,45 +47,6 @@ BOROUGH_COORDINATES = {
     'Staten Island (Richmond)': (40.5790, -74.1519),
     'Unknown/Missing': (40.730610, -73.935242) 
 }
-
-# --- CACHED GEOCODING FUNCTION (Re-enabled) ---
-@st.cache_data
-def geocode_sample_data(sample_df):
-    """Geocodes a small sample of tickets using a public service (Nominatim)."""
-    st.info("Attempting to geocode a small sample (500 tickets) for street-level map...")
-    try:
-        geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
-    except Exception:
-        st.error("Geocoding service unavailable. Skipping street-level map.")
-        return pd.DataFrame()
-
-    def get_address(row):
-        # We rely on the API returning 'street_name' and 'house_number'
-        house = str(row.get('house_number', '')).split('-')[0]
-        street = row.get('street_name', '')
-        county = row.get('county', 'NY')
-        return f"{house} {street}, New York, {county}"
-        
-    sample_df['address'] = sample_df.apply(get_address, axis=1)
-    
-    def geocode_single(address):
-        try:
-            location = geolocator.geocode(address, timeout=5)
-            if location:
-                return (location.latitude, location.longitude)
-        except Exception:
-            return (None, None)
-        return (None, None)
-
-    # Limit geocoding to the first 500 rows for safety and speed.
-    geocoded_coords = sample_df['address'].head(500).apply(geocode_single)
-    
-    sample_df.loc[geocoded_coords.index, 'lat'] = geocoded_coords.apply(lambda x: x[0])
-    sample_df.loc[geocoded_coords.index, 'lon'] = geocoded_coords.apply(lambda x: x[1])
-
-    sample_df.dropna(subset=['lat', 'lon'], inplace=True)
-    return sample_df[['lat', 'lon', 'fine_amount']].rename(columns={'fine_amount': 'size'})
-
 
 @st.cache_data
 def load_data():
@@ -96,7 +57,7 @@ def load_data():
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # Query relies on the API's default columns. 
+    # MINIMAL QUERY: Only include the $limit parameter.
     params = {'$limit': 50000} 
 
     try:
@@ -106,7 +67,7 @@ def load_data():
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
         elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). Check dataset URL or server limits.")
+             st.error("Error loading data. Status Code: 400 (Bad Request). The API server rejected the request. Please verify the dataset URL.")
              return pd.DataFrame()
         else:
             st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
@@ -118,7 +79,7 @@ def load_data():
     df_processed = df.copy()
 
     # Data Cleaning and Type Conversion
-    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location']
+    columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location', 'street_name', 'house_number']
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
     numeric_cols = ['fine_amount']
@@ -158,8 +119,6 @@ def load_data():
     df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
 
     return df_processed
-
-# ... (get_model_results, plot_hotspots, plot_rush_hour, plot_unpaid_heatmap, plot_roc_curves functions remain the same) ...
 
 @st.cache_resource
 def get_model_results(df):
@@ -259,7 +218,23 @@ def get_model_results(df):
     
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
 
-# --- PLOTTING FUNCTIONS ---
+# --- KPI CALCULATION FUNCTION ---
+def calculate_kpis(df):
+    """Calculates key metrics for the dashboard."""
+    total_violations = len(df)
+    
+    # Calculate revenue metrics (using only fine_amount since others might be missing)
+    total_fines = df['fine_amount'].sum()
+    avg_fine = df['fine_amount'].mean()
+    
+    # Calculate payment success rate
+    paid_count = df['is_paid'].sum()
+    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
+    
+    return total_violations, total_fines, avg_fine, paid_rate
+
+
+# --- PLOTTING FUNCTIONS (No changes) ---
 
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
@@ -377,9 +352,10 @@ with st.spinner('Loading data and training models... This may take a moment on f
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
         
-    # The street-level map functionality is removed/commented out to restore stability.
-    st_level_map_data = pd.DataFrame() 
+    # Calculate KPIs immediately after loading data
+    total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
+    # We skip the street-level map attempt as it causes instability/errors
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
 
 st.success("Data and models loaded successfully!")
@@ -391,18 +367,45 @@ tab1, tab2, tab3 = st.tabs([
     "3. The 'Solution' (Live Prediction Tool)"
 ])
 
-# --- TAB 1: EDA (Updated with Map) ---
+# --- TAB 1: EDA (Updated with KPIs and Data View) ---
 with tab1:
-    st.header("The Setting: Where and When do Violations Occur?")
-    st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
+    st.header("1. Data Overview and Key Metrics")
     
-    # STREET-LEVEL MAP SECTION removed for stability.
-    st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400) and lack of direct coordinate data.")
+    # --- NEW KPI SECTION ---
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+    
+    with kpi_col1:
+        st.metric(label="Total Violations (Sample)", 
+                  value=f"{total_violations:,}")
+    
+    with kpi_col2:
+        st.metric(label="Total Fine Value (Sample)", 
+                  value=f"${total_fines:,.0f}")
+    
+    with kpi_col3:
+        st.metric(label="Average Fine Amount", 
+                  value=f"${avg_fine:.2f}")
+
+    with kpi_col4:
+        st.metric(label="Paid Rate (Sampled)", 
+                  value=f"{paid_rate:.1f}%")
+        
     st.markdown("---") 
 
-    # AGGREGATED BAR CHART
+    # --- NEW DATA SAMPLE VIEWER ---
+    with st.expander("View Raw Data Sample (First 1,000 Rows)"):
+        st.dataframe(df_processed.head(1000), use_container_width=True)
+
+    st.header("2. Where and When do Violations Occur?")
+    st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
+    
+    # Street-level map is disabled
+    st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400).")
+    st.markdown("---") 
+
+    # AGGREGATED BAR CHART and MAP
     plot_map_hotspots(df_processed)
-    st.markdown("---") # Visual separator
+    st.markdown("---") 
     
     col1, col2 = st.columns(2)
     with col1:
@@ -410,7 +413,7 @@ with tab1:
     with col2:
         st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
         
-    st.header("The 'Rising Insight': Where and When are Violations *Unpaid*?")
+    st.header("3. Where and When are Violations *Unpaid*?")
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 

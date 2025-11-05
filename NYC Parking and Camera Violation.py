@@ -122,6 +122,8 @@ def load_data():
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
     # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
+    if 'issuing_agency' in df_processed.columns:
+        df_processed['issuing_agency'] = df_processed['issuing_agency'].astype(str).str.strip().str.upper()
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
     df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
     df_processed['county'].fillna('Unknown/Missing', inplace=True)
@@ -283,7 +285,7 @@ def get_model_results(df):
         pipeline.fit(X_train, y_train)
         
         # FIX: Prediction must use the feature data (X_test), not the target data (y_test)
-        y_pred = pipeline.predict(X_test)
+        y_pred = pipeline.predict(X_test) 
         y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
 
         report_dict = classification_report(y_test, y_pred, target_names=target_names, output_dict=True)
@@ -411,37 +413,42 @@ def plot_roc_curves(roc_results):
     )
     return fig
 
-def plot_map_hotspots(df):
-    """Creates an aggregated map of violation counts by central borough coordinates."""
-    
+def plot_mapbox_hotspots(df):
+    """
+    Creates an interactive map of violation counts by central borough coordinates
+    using Plotly Express, supporting color by county and hover information.
+    """
     map_df = df['county'].value_counts().reset_index()
     map_df.columns = ['county', 'count']
     
-    # Exclude Unknown/Missing from the map plot
     map_df = map_df[map_df['county'] != 'Unknown/Missing']
 
-    # 1. Map the County names to their predefined center coordinates
+    # Map the County names to their predefined center coordinates
     map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
     
-    # 2. Prepare the map data required by st.map
-    map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
-    
-    # 3. Plotly Map for interactivity and color
-    st.markdown("#### Violation Hotspots by Borough (Aggregated Center Points)")
-    st.write("This map visualizes the total violation counts aggregated at the center point of each borough.")
-    
-    fig = px.scatter_mapbox(map_data,
+    # Ensure all necessary columns for Plotly are present and not NaN
+    map_df.dropna(subset=['lat', 'lon', 'count', 'county'], inplace=True)
+
+    if map_df.empty:
+        return go.Figure().add_annotation(
+            text="No valid data points for the interactive map.",
+            showarrow=False
+        )
+
+    fig = px.scatter_mapbox(map_df,
                             lat="lat",
                             lon="lon",
-                            size="count", 
-                            color="county", 
-                            hover_name="county", 
-                            hover_data={"count": True, "lat": False, "lon": False}, 
-                            zoom=9, 
-                            mapbox_style="carto-positron", 
-                            size_max=50 
+                            size="count", # Size of bubbles based on count
+                            color="county", # Color of bubbles based on county
+                            hover_name="county", # Text shown on hover
+                            hover_data={"count": True, "lat": False, "lon": False}, # Include count in hover data, hide lat/lon
+                            zoom=9, # Initial zoom level
+                            mapbox_style="carto-positron", # Or "open-street-map", "stamen-toner"
+                            title="<b>Violation Hotspots by NYC Borough</b>",
+                            size_max=50 # Max size for bubbles for better visualization
                            )
+    
     fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
     return fig
 

@@ -8,3 +8,4 @@ statsmodels
 matplotlib
 seaborn
 geopy
+lxml

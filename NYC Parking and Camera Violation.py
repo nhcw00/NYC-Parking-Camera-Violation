@@ -63,7 +63,7 @@ def load_data():
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # FIX FOR 400 ERROR: Only include the $limit parameter, which is the most reliable part.
-    params = {'$limit': 5000} 
+    params = {'$limit': 50000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)

@@ -551,7 +551,7 @@ with tab2:
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
-    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
+    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost. An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $\alpha = 0.05$ level. The resulting model demonstrated an Adjusted $R^2$ of {adj_r_squared_value}. This low Adjusted $R^2$ suggests the model has limited explanatory power and that a substantial portion of the variance in the dependent variable remains unaccounted for. However, a low Adjusted $R^2$ does not serve as a test for linearity; therefore, we cannot conclude the true relationship is non-linear based on this metric alone.")
     st.text(ols_summary.as_text())
     st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
     

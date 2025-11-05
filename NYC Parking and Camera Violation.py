@@ -587,9 +587,9 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # FIX: Use the defensive, type-safe options generated outside the loop
-            county_options = sorted(df_processed['county'].unique()) if 'county' in df_processed.columns else ['Unknown']
-            issuing_agency_options = sorted(df_processed['issuing_agency'].unique()) if 'issuing_agency' in df_processed.columns else ['Unknown']
+            # FIX: Use the type-safe options for county and issuing agency
+            county_options = sorted([str(x) for x in df_processed['county'].unique()]) if 'county' in df_processed.columns else ['Unknown']
+            issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()]) if 'issuing_agency' in df_processed.columns else ['Unknown']
             
             county = st.selectbox("Select County:", options=county_options)
             issuing_agency = st.selectbox("Select Issuing Agency:", options=issuing_agency_options)

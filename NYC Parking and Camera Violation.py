@@ -29,15 +29,17 @@ YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl"
 
 @st.cache_data
 def load_data():
-    """Loads, cleans, and preprocesses ALL NYC parking violation data via SODA API."""
-    # --- CAUTION: ATTEMPTING TO LOAD FULL DATASET ---
-    st.warning("⚠️ Loading FULL dataset (millions of rows). This may take several minutes or cause a memory/timeout error in Streamlit Cloud.")
+    """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
+    st.warning("✅ Loading a **sample** of 5,000 rows for stable performance in Streamlit.")
     
     headers = {"X-App-Token": YOUR_APP_TOKEN}
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # PARAMETER CHANGE: Removing {"$limit": 5000} to attempt full load
-    params = {} 
+    # CORRECTED PARAMETER: Use dictionary mapping and $select
+    params = {
+        '$limit': 5000,
+        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type'
+    } 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -102,8 +104,7 @@ def get_model_results(df):
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
     
-    # Due to the large data size, we must limit the data used for modeling to prevent memory overflow
-    # We will use a maximum of 10,000 samples total (5k paid, 5k unpaid) if available.
+    # Due to data limits, we use a maximum of 10,000 samples total (5k paid, 5k unpaid) if available.
     max_samples_per_class = 5000
     
     paid_df = df[df['is_paid'] == 1]
@@ -198,14 +199,16 @@ def get_model_results(df):
 # --- PLOTTING FUNCTIONS ---
 
 def plot_hotspots(df):
-    """Generates a bar chart of violations by county, with robustness checks."""
+    """Generates a bar chart of violations by county, with robustness checks. (Pandas Compatible)"""
     if 'county' not in df.columns or df['county'].isnull().all():
         return go.Figure().add_annotation(
             text="County data is not available or entirely null after cleaning.",
             showarrow=False
         )
-
-    count_data = df['county'].value_counts().reset_index(names=['county', 'count'])
+    
+    # PANDAS COMPATIBILITY FIX APPLIED HERE
+    count_data = df['county'].value_counts().reset_index()
+    count_data.columns = ['county', 'count'] # Correct, compatible way to rename columns
     
     if count_data.empty:
         return go.Figure().add_annotation(
@@ -222,7 +225,11 @@ def plot_hotspots(df):
     return fig
 
 def plot_rush_hour(df):
-    count_data = df['violation_hour'].value_counts().reset_index(names=['violation_hour', 'count'])
+    """Generates a bar chart of violations by hour. (Pandas Compatible)"""
+    # PANDAS COMPATIBILITY FIX APPLIED HERE
+    count_data = df['violation_hour'].value_counts().reset_index()
+    count_data.columns = ['violation_hour', 'count'] # Correct, compatible way to rename columns
+    
     fig = px.bar(
         count_data, x='violation_hour', y='count',
         title='<b>Parking Violation "Rush Hour"</b>',

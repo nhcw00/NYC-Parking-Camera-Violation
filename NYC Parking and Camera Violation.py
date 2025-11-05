@@ -482,6 +482,7 @@ with st.spinner('Loading data and training models... This may take a moment on f
 if df_processed.empty:
     st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning. Please check the API connection or your data cleaning steps.")
 else:
+    # --- PROCEED WITH APP IF DATA IS VALID ---
     st.success("Data and models loaded successfully!")
 
     # Calculate KPIs immediately after loading data
@@ -558,7 +559,7 @@ else:
             # Handle the case where no significant predictors were found
             st.error(ols_summary)
         else:
-            # FIX: Corrected syntax error and used improved statistical prose
+            # Displays the statistically fixed prose
             st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable.")
 
             # Display the clean, styled OLS table
@@ -592,14 +593,14 @@ else:
         with st.form("prediction_form"):
             col1, col2 = st.columns(2)
             with col1:
-                # Options are now guaranteed to exist due to the empty check
+                # This line is now safe because the entire else-block relies on df_processed being valid
                 county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
                 issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
             with col2:
                 violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
                 fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
 
-            # This is the submit button that was flagged in the warning
+            # The required submit button
             submitted = st.form_submit_button("Predict Payment Status")
 
         if submitted:

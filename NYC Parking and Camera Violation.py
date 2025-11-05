@@ -15,7 +15,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
-import numpy as np # Needed for the map data
+import numpy as np 
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -28,7 +28,7 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
-# --- FIX 1: COUNTY MAPPING ---
+# --- COUNTY MAPPING ---
 COUNTY_MAPPING = {
     'NY': 'Manhattan (New York)',
     'MN': 'Manhattan (New York)',
@@ -44,14 +44,13 @@ COUNTY_MAPPING = {
 }
 
 # --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
-# Approximate center coordinates for each borough for mapping aggregation
 BOROUGH_COORDINATES = {
     'Manhattan (New York)': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
     'Brooklyn (Kings)': (40.6782, -73.9442),
     'Bronx': (40.8448, -73.8648),
     'Staten Island (Richmond)': (40.5790, -74.1519),
-    'Unknown/Missing': (40.730610, -73.935242) # NYC general area
+    'Unknown/Missing': (40.730610, -73.935242) 
 }
 
 
@@ -63,11 +62,8 @@ def load_data():
     headers = {"X-App-Token": YOUR_APP_TOKEN}
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    params = {
-        '$limit': 5000,
-        # ADDING 'violation_location' to the select list
-        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type, violation_location'
-    } 
+    # FIX FOR 400 ERROR: Only include the $limit parameter, which is the most reliable part.
+    params = {'$limit': 5000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -75,17 +71,22 @@ def load_data():
             data = response.json()
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
+        elif response.status_code == 400:
+             # Specific message for bad request
+             st.error("Error loading data. Status Code: 400 (Bad Request). Please verify the API endpoint or token.")
+             return pd.DataFrame()
         else:
-            st.error(f"Error loading data from API. Status Code: {response.status_code}")
+            st.error(f"Error loading data. Status Code: {response.status_code}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"An error occurred during data loading: {e}")
+        st.error(f"An unexpected error occurred during data loading: {e}")
         return pd.DataFrame()
 
     df_processed = df.copy()
 
     # Data Cleaning and Type Conversion
     columns_to_drop = ['plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type']
+    # If the API didn't return a column, errors='ignore' ensures we don't crash
     df_processed.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
     numeric_cols = ['fine_amount', 'penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due']
@@ -121,7 +122,7 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # FIX 1 APPLICATION: MAP COUNTY CODES TO NAMES
+    # MAP COUNTY CODES TO NAMES
     df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
 
     return df_processed
@@ -148,7 +149,7 @@ def get_model_results(df):
 
     st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
-    # 2. Define Preprocessor (Features are already cleaned/mapped by load_data)
+    # 2. Define Preprocessor 
     y_class = class_df['is_paid']
     X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
     categorical_features = ['county', 'issuing_agency']
@@ -304,7 +305,6 @@ def plot_roc_curves(roc_results):
     )
     return fig
 
-# --- NEW FUNCTION: MAP HOTSPOTS ---
 def plot_map_hotspots(df):
     """Creates an aggregated map of violation counts by central borough coordinates."""
     

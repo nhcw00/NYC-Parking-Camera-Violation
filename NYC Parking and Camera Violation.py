@@ -61,8 +61,6 @@ def load_data():
     
     # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
     headers = {} 
-    
-    # --- FIX: Restored the 'https://' scheme to the URL ---
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
@@ -281,18 +279,29 @@ def get_model_results(df):
     accuracy_results = {}
     roc_results = {}
     target_names = ['Unpaid', 'Paid']
+    
+    # --- FIX: We need to store the best model ---
+    best_model_pipeline = None # Initialize
+    max_auc = -1 # Initialize tracker for best AUC
+    best_model_name = "N/A" # Initialize name tracker
 
     for name, model in models.items():
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', model)])
         pipeline.fit(X_train, y_train)
         
-        # FIX: Prediction must use the feature data (X_test)
         y_pred = pipeline.predict(X_test) 
         y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
 
         report_dict = classification_report(y_test, y_pred, target_names=target_names, output_dict=True)
         fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
         roc_auc = auc(fpr, tpr)
+        
+        # Check if this model is the new best model
+        if roc_auc > max_auc:
+            max_auc = roc_auc
+            best_model_pipeline = pipeline
+            best_model_name = name
+            
         roc_results[name] = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc}
         accuracy_results[name] = {
             'Accuracy': report_dict['accuracy'], 'AUC': roc_auc,
@@ -315,22 +324,14 @@ def get_model_results(df):
         adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
     
     # 7. Train the FINAL Tuned Model (Decision Tree)
-    dt_pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', DecisionTreeClassifier(
-            criterion='entropy', 
-            max_depth=10, 
-            min_samples_leaf=1, 
-            random_state=RANDOM_SEED
-        ))
-    ])
-    dt_pipeline.fit(X_train, y_train)
+    # --- REMOVED: We are now using the dynamic 'best_model_pipeline' ---
     
     # 8. Return results
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
+    # FIX: Return the best pipeline (Logistic Regression) and its name
+    return results_df, roc_results, ols_summary, best_model_pipeline, X_class.columns, adj_r_squared_value, best_model_name
 
 
 # --- PLOTTING FUNCTIONS ---
@@ -345,7 +346,6 @@ def plot_hotspots(df):
     count_data = df['county'].value_counts().reset_index()
     count_data.columns = ['county', 'count'] 
     
-    # Ensure 'Unknown/Missing' is excluded from the visible chart
     count_data = count_data[count_data['county'] != 'Unknown/Missing']
 
     if count_data.empty:
@@ -376,7 +376,6 @@ def plot_rush_hour(df):
     return fig
 
 def plot_unpaid_heatmap(df):
-    # Check for empty dataframe before pivot
     if df.empty or 'is_paid' not in df.columns:
         return go.Figure().add_annotation(
             text="No data available for Unpaid Heatmap.",
@@ -425,11 +424,9 @@ def plot_mapbox_hotspots(df):
     
     map_df = map_df[map_df['county'] != 'Unknown/Missing']
 
-    # Map the County names to their predefined center coordinates
     map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
     
-    # Ensure all necessary columns for Plotly are present and not NaN
     map_df.dropna(subset=['lat', 'lon', 'count', 'county'], inplace=True)
 
     if map_df.empty:
@@ -460,11 +457,9 @@ def calculate_kpis(df):
     """Calculates key metrics for the dashboard."""
     total_violations = len(df)
     
-    # Calculate revenue metrics (using only fine_amount since others might be missing)
     total_fines = df['fine_amount'].sum()
     avg_fine = df['fine_amount'].mean()
     
-    # Calculate payment success rate
     paid_count = df['is_paid'].sum()
     paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
     
@@ -491,8 +486,8 @@ st.success("Data and models loaded successfully!")
 # Calculate KPIs
 total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-# Load and train models
-model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
+# Load and train models (Capturing all 7 values)
+model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value, best_model_name = get_model_results(df_processed)
 
 # Create Tabs for the Story
 tab1, tab2, tab3 = st.tabs([
@@ -590,14 +585,14 @@ with tab2:
 # --- TAB 3: INTERACTIVE PREDICTION ---
 with tab3:
     st.header("The 'Solution': Will This Ticket Be Paid?")
-    st.write("This tool uses our best model (Tuned Decision Tree) to predict the payment status of a *theoretical* violation based on your inputs.")
+    # --- FIX: Use the dynamic best_model_name variable ---
+    st.write(f"This tool uses our best model ({best_model_name}) to predict the payment status of a *theoretical* violation based on your inputs.")
 
     # Input forms for prediction
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
             # FIX: Use the final, robust, type-safe options generation
-            # This converts all values (including None/NaN) to strings before sorting
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             

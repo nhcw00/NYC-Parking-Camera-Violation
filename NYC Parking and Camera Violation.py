@@ -16,7 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-from geopy.geocoders import Nominatim # <--- NEW REQUIREMENT
+from geopy.geocoders import Nominatim 
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -49,20 +49,31 @@ BOROUGH_COORDINATES = {
     'Unknown/Missing': (40.730610, -73.935242) 
 }
 
-# --- NEW CACHED GEOCODING FUNCTION ---
+# --- CACHED GEOCODING FUNCTION (Requires geopy) ---
 @st.cache_data
 def geocode_sample_data(sample_df):
     """Geocodes a small sample of tickets using a public service (Nominatim)."""
     st.info("Attempting to geocode a small sample for street-level map visualization...")
-    geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
-    
+    # Using a try/except block just in case Nominatim service is unavailable
+    try:
+        geolocator = Nominatim(user_agent="nyc_parking_app_geocoder")
+    except Exception:
+        st.error("Geocoding service unavailable. Skipping street-level map.")
+        return pd.DataFrame()
+
     # Clean and combine address components
     def get_address(row):
-        house = str(row.get('house_number', '')).split('-')[0] # Often has block info
+        house = str(row.get('house_number', '')).split('-')[0]
         street = row.get('street_name', '')
         county = row.get('county', 'NY')
         return f"{house} {street}, New York, {county}"
         
+    # We must ensure all required columns exist before applying
+    required_geo_cols = ['house_number', 'street_name', 'county']
+    if not all(col in sample_df.columns for col in required_geo_cols):
+         st.error("Geocoding failed: Required columns (house_number, street_name) not present in API data.")
+         return pd.DataFrame()
+
     sample_df['address'] = sample_df.apply(get_address, axis=1)
     
     def geocode_single(address):
@@ -74,8 +85,7 @@ def geocode_sample_data(sample_df):
             return (None, None)
         return (None, None)
 
-    # Note: Running geocoding on a large sample (even 5k) will be slow and may violate Nominatim's terms.
-    # We will limit the geocoding to the first 500 rows for safety and speed.
+    # Limit geocoding to the first 500 rows for safety and speed.
     geocoded_coords = sample_df['address'].head(500).apply(geocode_single)
     
     sample_df.loc[geocoded_coords.index, 'lat'] = geocoded_coords.apply(lambda x: x[0])
@@ -88,17 +98,17 @@ def geocode_sample_data(sample_df):
 @st.cache_data
 def load_data():
     """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
-    # Updated warning for 50,000 sample size
     st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
     
-    headers = {"X-App-Token": YOUR_APP_TOKEN}
+    # --- DIAGNOSTIC FIX: REMOVING TOKEN FROM HEADER TO TEST FOR 400 ERROR CAUSE ---
+    headers = {} # Token removed for diagnostic test
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # PARAMETER CHANGE: Raised limit to 50,000 for analysis
-    # Added house_number and street_name for geocoding
+    # PARAMETERS: Raised limit to 50,000
+    # Included required geo fields for mapping later
     params = {
         '$limit': 50000, 
-        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type, violation_location, street_name, house_number'
+        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, street_name, house_number'
     } 
 
     try:
@@ -108,10 +118,10 @@ def load_data():
             df = pd.DataFrame(data)
             st.info(f"Successfully loaded {len(df)} rows.")
         elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). Please verify the API endpoint or token.")
+             st.error("Error loading data. Status Code: 400 (Bad Request). This strongly suggests an invalid API URL, an unresolvable parameter, or a blocked request.")
              return pd.DataFrame()
         else:
-            st.error(f"Error loading data. Status Code: {response.status_code}")
+            st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
             return pd.DataFrame()
     except Exception as e:
         st.error(f"An unexpected error occurred during data loading: {e}")
@@ -161,28 +171,208 @@ def load_data():
 
     return df_processed
 
-# ... (get_model_results, plot_hotspots, plot_rush_hour, plot_unpaid_heatmap, plot_roc_curves functions remain the same) ...
-
-# --- NEW FUNCTION: STREET-LEVEL MAP HOTSPOTS ---
-def plot_street_level_hotspots(df):
-    """Uses geocoding to plot an actual street-level map."""
+@st.cache_resource
+def get_model_results(df):
+    """Trains classification models and runs OLS regression."""
     
-    st.markdown("#### Street-Level Violation Hotspots (Sampled & Geocoded)")
-    st.write("This map uses the street address data of a small sample (500 tickets) and converts them to coordinates. **Bubbles represent individual tickets.**")
+    # 1. Balance the Data
+    min_class_size = df['is_paid'].value_counts().min()
+    if min_class_size < 100:
+        st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
     
-    # Geocoding function is cached
-    map_data = geocode_sample_data(df.copy()) 
+    max_samples_per_class = 5000
+    
+    paid_df = df[df['is_paid'] == 1]
+    unpaid_df = df[df['is_paid'] == 0]
+    
+    actual_sample_size = min(len(paid_df), len(unpaid_df), max_samples_per_class)
+    
+    paid_df = paid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
+    unpaid_df = unpaid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
+    class_df = pd.concat([paid_df, unpaid_df])
 
-    if map_data.empty or 'lat' not in map_data.columns:
-        st.error("Street-level mapping failed: Could not geocode sample data. Please ensure 'geopy' is installed.")
-        return
+    st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
+    # 2. Define Preprocessor 
+    y_class = class_df['is_paid']
+    X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
+    categorical_features = ['county', 'issuing_agency']
+    numerical_features = ['fine_amount', 'violation_hour']
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numerical_features),
+            ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+        ],
+        remainder='passthrough'
+    )
+
+    # 3. Train/Test Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_class, y_class, test_size=0.3, random_state=RANDOM_SEED, stratify=y_class
+    )
+
+    # 4. Define All Models
+    models = {
+        "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
+        "Naive Bayes": GaussianNB(),
+        "KNN": KNeighborsClassifier(), 
+        "Decision Tree": DecisionTreeClassifier(random_state=RANDOM_SEED),
+        "Random Forest": RandomForestClassifier(random_state=RANDOM_SEED),
+        "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
+    }
+
+    # 5. Train, Predict, and Store Results
+    accuracy_results = {}
+    roc_results = {}
+    target_names = ['Unpaid', 'Paid']
+
+    for name, model in models.items():
+        pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', model)])
+        pipeline.fit(X_train, y_train)
+        y_pred = pipeline.predict(X_test)
+        y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
+
+        report_dict = classification_report(y_test, y_pred, target_names=target_names, output_dict=True)
+        fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+        roc_auc = auc(fpr, tpr)
+        roc_results[name] = {'fpr': fpr, 'tpr': tpr, 'auc': roc_auc}
+        accuracy_results[name] = {
+            'Accuracy': report_dict['accuracy'], 'AUC': roc_auc,
+            'F1-Score (W)': report_dict['weighted avg']['f1-score'],
+            'F1-Score (Paid)': report_dict['Paid']['f1-score']
+        }
+    
+    # 6. Run OLS Regression for Fine Amount
+    regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
+    y_reg = regression_df['fine_amount']
+    X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
+    X_reg_const = sm.add_constant(X_reg)
+    ols_model = sm.OLS(y_reg, X_reg_const).fit()
+    ols_summary = ols_model.summary()
+
+    # 7. Train the FINAL Tuned Model (Decision Tree)
+    dt_pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('classifier', DecisionTreeClassifier(
+            criterion='entropy', 
+            max_depth=10, 
+            min_samples_leaf=1, 
+            random_state=RANDOM_SEED
+        ))
+    ])
+    dt_pipeline.fit(X_train, y_train)
+    
+    # 8. Return results
+    results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
+    results_df.sort_values(by='AUC', ascending=False, inplace=True)
+    
+    return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
+
+# --- PLOTTING FUNCTIONS ---
+
+def plot_hotspots(df):
+    """Generates a bar chart of violations by county, with full borough names."""
+    if 'county' not in df.columns or df['county'].isnull().all():
+        return go.Figure().add_annotation(
+            text="County data is not available or entirely null after cleaning.",
+            showarrow=False
+        )
+    
+    count_data = df['county'].value_counts().reset_index()
+    count_data.columns = ['county', 'count'] 
+    
+    if count_data.empty:
+        return go.Figure().add_annotation(
+            text="No violations found to plot by county.",
+            showarrow=False
+        )
+        
+    fig = px.bar(
+        count_data, x='count', y='county', orientation='h',
+        title='<b>Parking Violation Hotspots by NYC Borough</b>',
+        labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
+    )
+    fig.update_layout(yaxis={'categoryorder':'total ascending'})
+    return fig
+
+def plot_rush_hour(df):
+    """Generates a bar chart of violations by hour, ordered 0-23."""
+    count_data = df['violation_hour'].value_counts().reset_index()
+    count_data.columns = ['violation_hour', 'count']
+    
+    fig = px.bar(
+        count_data, x='violation_hour', y='count',
+        title='<b>Parking Violation "Rush Hour"</b>',
+        labels={'count': 'Number of Violations', 'violation_hour': 'Hour of the Day (0-23)'}
+    )
+    fig.update_xaxes(type='category', categoryorder='category ascending', dtick=1)
+    return fig
+
+def plot_unpaid_heatmap(df):
+    # Check for empty dataframe before pivot
+    if df.empty or 'is_paid' not in df.columns:
+        return go.Figure().add_annotation(
+            text="No data available for Unpaid Heatmap.",
+            showarrow=False
+        )
+        
+    df_unpaid = df[df['is_paid'] == 0]
+    pivot_data = df_unpaid.pivot_table(
+        index='county', columns='violation_hour', aggfunc='size', fill_value=0
+    )
+    fig = px.imshow(
+        pivot_data,
+        title='<b>Heatmap of Unpaid Violations by Borough and Hour</b>',
+        labels={'x': 'Hour of the Day', 'y': 'Borough (County)', 'color': 'Unpaid Tickets'},
+        aspect="auto"
+    )
+    fig.update_xaxes(dtick=1)
+    return fig
+
+def plot_roc_curves(roc_results):
+    fig = go.Figure()
+    fig.add_shape(type='line', line=dict(dash='dash'), x0=0, x1=1, y0=0, y1=1)
+    
+    for name, result in roc_results.items():
+        fig.add_trace(go.Scatter(
+            x=result['fpr'], y=result['tpr'], 
+            name=f"{name} (AUC = {result['auc']:.4f})",
+            mode='lines'
+        ))
+    
+    fig.update_layout(
+        title='<b>ROC Curve Comparison</b>',
+        xaxis_title='False Positive Rate',
+        yaxis_title='True Positive Rate',
+        legend_title='Model'
+    )
+    return fig
+
+def plot_map_hotspots(df):
+    """Creates an aggregated map of violation counts by central borough coordinates."""
+    
+    map_df = df['county'].value_counts().reset_index()
+    map_df.columns = ['county', 'count']
+    
+    # 1. Map the County names to their predefined center coordinates
+    map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
+    map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
+    
+    # 2. Prepare the map data required by st.map
+    # Renaming columns to Streamlit's required lowercase 'lat' and 'lon'
+    map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
+    
+    # 3. Streamlit Map (Simple Scatter/Bubble Map)
+    st.markdown("#### Violation Hotspots by Borough (Aggregated Center Points)")
+    st.write("This map visualizes the total violation counts aggregated at the center point of each borough.")
+    
     st.map(map_data, 
-           latitude='lat', 
-           longitude='lon', 
-           zoom=11, 
-           size='size', # Optional: Use fine amount for bubble size
-           color='#d80000'
+           latitude=40.73, # Center of map
+           longitude=-73.95, 
+           zoom=10, 
+           size='size', # Use violation count for bubble size
+           color='#d80000' # Red color for violations
           )
     
 # --- STREAMLIT APP LAYOUT ---
@@ -198,6 +388,11 @@ with st.spinner('Loading data and training models... This may take a moment on f
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
         
+    # --- Geocoding must be skipped if data is empty ---
+    st_level_map_data = pd.DataFrame()
+    if 'street_name' in df_processed.columns and 'house_number' in df_processed.columns:
+        st_level_map_data = geocode_sample_data(df_processed.copy())
+
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
 
 st.success("Data and models loaded successfully!")
@@ -214,11 +409,25 @@ with tab1:
     st.header("The Setting: Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
     
-    # 1. NEW STREET-LEVEL MAP SECTION
-    plot_street_level_hotspots(df_processed)
-    st.markdown("---") 
+    # STREET-LEVEL MAP SECTION
+    if not st_level_map_data.empty:
+        st.markdown("#### Street-Level Violation Hotspots (Sampled & Geocoded)")
+        st.write("This map uses the street address data of a small sample (500 tickets) and converts them to coordinates. **Bubbles represent individual tickets.**")
+        st.map(st_level_map_data, 
+               latitude='lat', 
+               longitude='lon', 
+               zoom=11, 
+               size='size', 
+               color='#d80000'
+              )
+        st.markdown("---")
+    else:
+        st.warning("Skipping street-level map visualization due to data loading or geocoding failure.")
+
+    # AGGREGATED BAR CHART
+    plot_map_hotspots(df_processed)
+    st.markdown("---") # Visual separator
     
-    # 2. AGGREGATED BAR CHART
     col1, col2 = st.columns(2)
     with col1:
         st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
@@ -229,7 +438,6 @@ with tab1:
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
-# ... (Tabs 2 and 3 remain the same) ...
 # --- TAB 2: MODELING ---
 with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")

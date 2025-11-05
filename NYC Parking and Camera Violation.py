@@ -478,144 +478,147 @@ st.write("This app analyzes the NYC Parking Violations dataset to find hotspots,
 with st.spinner('Loading data and training models... This may take a moment on first run.'):
     df_processed = load_data()
 
-# --- CRITICAL CHECK: ONLY PROCEED IF DATA IS VALID ---
-if df_processed.empty:
-    st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning. Please check the API connection or your data cleaning steps.")
-else:
-    # --- PROCEED WITH APP IF DATA IS VALID ---
-    st.success("Data and models loaded successfully!")
+# --- CRITICAL GUARD CLAUSE ---
+# Check if the required data columns exist before proceeding with the complex UI logic
+required_cols = ['county', 'issuing_agency', 'violation_hour', 'fine_amount', 'is_paid']
+if df_processed.empty or not all(col in df_processed.columns for col in required_cols):
+    st.error("Cannot run the application: Data loading failed or essential columns are missing after cleaning. Please verify the SODA API URL and data availability.")
+    st.stop() # Halt execution if data is invalid
 
-    # Calculate KPIs immediately after loading data
-    total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
+# --- INITIALIZE APP RESOURCES (ONLY RUNS IF DATA IS VALID) ---
+st.success("Data and models loaded successfully!")
 
-    # Load and train models (will be cached)
-    model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
+# Calculate KPIs
+total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-    # Create Tabs for the Story
-    tab1, tab2, tab3 = st.tabs([
-        "1. The 'Setting' (Exploratory Analysis)",
-        "2. The 'Climax' (Predictive Modeling)",
-        "3. The 'Solution' (Live Prediction Tool)"
-    ])
+# Load and train models
+model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
-    # --- TAB 1: EDA ---
-    with tab1:
-        st.header("1. Data Overview and Key Metrics")
+# Create Tabs for the Story
+tab1, tab2, tab3 = st.tabs([
+    "1. The 'Setting' (Exploratory Analysis)",
+    "2. The 'Climax' (Predictive Modeling)",
+    "3. The 'Solution' (Live Prediction Tool)"
+])
 
-        # --- KPI SECTION ---
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+# --- TAB 1: EDA ---
+with tab1:
+    st.header("1. Data Overview and Key Metrics")
 
-        with kpi_col1:
-            st.metric(label="Total Violations (Sample)",
-                      value=f"{total_violations:,}")
+    # --- KPI SECTION ---
+    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
 
-        with kpi_col2:
-            st.metric(label="Total Fine Value (Sample)",
-                      value=f"${total_fines:,.0f}")
+    with kpi_col1:
+        st.metric(label="Total Violations (Sample)",
+                  value=f"{total_violations:,}")
 
-        with kpi_col3:
-            st.metric(label="Average Fine Amount",
-                      value=f"${avg_fine:.2f}")
+    with kpi_col2:
+        st.metric(label="Total Fine Value (Sample)",
+                  value=f"${total_fines:,.0f}")
 
-        with kpi_col4:
-            st.metric(label="Paid Rate (Sampled)",
-                      value=f"{paid_rate:.1f}%")
+    with kpi_col3:
+        st.metric(label="Average Fine Amount",
+                  value=f"${avg_fine:.2f}")
 
-        st.markdown("---")
+    with kpi_col4:
+        st.metric(label="Paid Rate (Sampled)",
+                  value=f"{paid_rate:.1f}%")
 
-        # --- DATA SAMPLE VIEWER ---
-        with st.expander("View Raw Data Sample (First 1,000 Rows)"):
-            st.dataframe(df_processed.head(1000), use_container_width=True)
+    st.markdown("---")
 
-        st.header("2. Where and When do Violations Occur?")
-        st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
+    # --- DATA SAMPLE VIEWER ---
+    with st.expander("View Raw Data Sample (First 1,000 Rows)"):
+        st.dataframe(df_processed.head(1000), use_container_width=True)
 
-        # Street-level map is disabled
-        st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400).")
-        st.markdown("---")
+    st.header("2. Where and When do Violations Occur?")
+    st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
 
-        # AGGREGATED BAR CHART and MAP
-        plot_map_hotspots(df_processed)
-        st.markdown("---")
+    # Street-level map is disabled
+    st.warning("Street-level mapping feature temporarily disabled due to recurring API limitations (Status 400).")
+    st.markdown("---")
 
+    # AGGREGATED BAR CHART and MAP
+    plot_map_hotspots(df_processed)
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
+    with col2:
+        st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
+
+    st.header("3. Where and When are Violations *Unpaid*?")
+    st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
+    st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
+
+# --- TAB 2: MODELING ---
+with tab2:
+    st.header("The 'Climax': Why Do Fines and Payments Differ?")
+    st.write("We move from *explaining* to *enlightening* by using predictive models.")
+
+    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
+
+    if isinstance(ols_summary, str):
+        # Handle the case where no significant predictors were found
+        st.error(ols_summary)
+    else:
+        # Displays the statistically fixed prose
+        st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable.")
+
+        # Display the clean, styled OLS table
+        st.dataframe(create_ols_summary_df(ols_summary))
+
+        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
+
+        # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
+        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
+            st.text(ols_summary.as_text())
+
+    st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
+    st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
+
+    CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
+
+    if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
+        model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
+
+    st.dataframe(model_results_df.style.format("{:.4f}"))
+
+    st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
+    st.plotly_chart(plot_roc_curves(roc_results), use_container_width=True)
+
+# --- TAB 3: INTERACTIVE PREDICTION ---
+with tab3:
+    st.header("The 'Solution': Will This Ticket Be Paid?")
+    st.write("This tool uses our best model (Tuned Decision Tree) to predict the payment status of a *theoretical* violation based on your inputs.")
+
+    # Input forms for prediction
+    with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
+            # This line is now safe due to the guard clause at the start
+            county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
+            issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
         with col2:
-            st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
+            violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
+            fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
 
-        st.header("3. Where and When are Violations *Unpaid*?")
-        st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
-        st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
+        # The required submit button
+        submitted = st.form_submit_button("Predict Payment Status")
 
-    # --- TAB 2: MODELING ---
-    with tab2:
-        st.header("The 'Climax': Why Do Fines and Payments Differ?")
-        st.write("We move from *explaining* to *enlightening* by using predictive models.")
+    if submitted:
+        input_data = pd.DataFrame(
+            [[fine_amount, county, issuing_agency, violation_hour]],
+            columns=['fine_amount', 'county', 'issuing_agency', 'violation_hour']
+        )
 
-        st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
+        prediction = best_model.predict(input_data)[0]
+        prediction_proba = best_model.predict_proba(input_data)[0]
 
-        if isinstance(ols_summary, str):
-            # Handle the case where no significant predictors were found
-            st.error(ols_summary)
+        # Display the result
+        if prediction == 1:
+            st.success(f"**Prediction: PAID** (Probability: {prediction_proba[1]:.1%})")
+            st.write("The model predicts this type of ticket is likely to be paid.")
         else:
-            # Displays the statistically fixed prose
-            st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**. While this value is low, it does not preclude the possibility of a linear relationship between the independent variables and the dependent variable.")
-
-            # Display the clean, styled OLS table
-            st.dataframe(create_ols_summary_df(ols_summary))
-
-            st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-
-            # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
-            with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-                st.text(ols_summary.as_text())
-
-        st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
-        st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
-
-        CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
-
-        if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
-            model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
-
-        st.dataframe(model_results_df.style.format("{:.4f}"))
-
-        st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
-        st.plotly_chart(plot_roc_curves(roc_results), use_container_width=True)
-
-    # --- TAB 3: INTERACTIVE PREDICTION ---
-    with tab3:
-        st.header("The 'Solution': Will This Ticket Be Paid?")
-        st.write("This tool uses our best model (Tuned Decision Tree) to predict the payment status of a *theoretical* violation based on your inputs.")
-
-        # Input forms for prediction
-        with st.form("prediction_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                # This line is now safe because the entire else-block relies on df_processed being valid
-                county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
-                issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
-            with col2:
-                violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
-                fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
-
-            # The required submit button
-            submitted = st.form_submit_button("Predict Payment Status")
-
-        if submitted:
-            input_data = pd.DataFrame(
-                [[fine_amount, county, issuing_agency, violation_hour]],
-                columns=['fine_amount', 'county', 'issuing_agency', 'violation_hour']
-            )
-
-            prediction = best_model.predict(input_data)[0]
-            prediction_proba = best_model.predict_proba(input_data)[0]
-
-            # Display the result
-            if prediction == 1:
-                st.success(f"**Prediction: PAID** (Probability: {prediction_proba[1]:.1%})")
-                st.write("The model predicts this type of ticket is likely to be paid.")
-            else:
-                st.error(f"**Prediction: UNPAID** (Probability: {prediction_proba[0]:.1%})")
-                st.write("The model predicts this type of ticket is at high risk of remaining unpaid.")
+            st.error(f"**Prediction: UNPAID** (Probability: {prediction_proba[0]:.1%})")
+            st.write("The model predicts this type of ticket is at high risk of remaining unpaid.")

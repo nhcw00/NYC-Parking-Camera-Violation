@@ -120,6 +120,49 @@ def load_data():
 
     return df_processed
 
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
+def create_ols_summary_df(ols_summary):
+    """
+    Extracts key metrics from the OLS summary table and formats them for display.
+    """
+    # Extract the main parameters table (the second table in the summary)
+    results_as_html = ols_summary.tables[1].as_html()
+    results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
+    
+    # Clean up column names and select relevant columns
+    results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
+    results_df = results_df[['Coefficient', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']]
+    
+    # Clean up index names for clarity
+    results_df.index = results_df.index.str.replace('county_Manhattan (New York)', 'Manhattan')
+    results_df.index = results_df.index.str.replace('county_Brooklyn (Kings)', 'Brooklyn')
+    results_df.index = results_df.index.str.replace('county_Queens', 'Queens')
+    results_df.index = results_df.index.str.replace('county_Staten Island (Richmond)', 'Staten Island')
+    results_df.index = results_df.index.str.replace('issuing_agency_TRANSIT AUTHORITY', 'Transit Authority')
+    results_df.index = results_df.index.str.replace('const', 'Baseline Fine (Intercept)')
+
+    # Styling function: highlight significant P-values (< 0.05)
+    def style_significance(row):
+        styles = [''] * len(row)
+        # Assuming P>|t| is at index 1 (the second column in our selection)
+        if row.iloc[1] < 0.05:
+            # Highlight the coefficient and the P-value in green
+            styles[0] = 'background-color: #d4edda; font-weight: bold;'
+            styles[1] = 'background-color: #d4edda; font-weight: bold; color: green;'
+        return styles
+
+    # Apply styling and formatting
+    styled_df = results_df.style.apply(style_significance, axis=1) \
+        .format({
+            'Coefficient': "{:.2f}",
+            'P>|t|': "{:.3f}",
+            'CI Lower (2.5%)': "{:.2f}",
+            'CI Upper (97.5%)': "{:.2f}"
+        })
+    
+    return styled_df
+
+
 @st.cache_resource
 def get_model_results(df):
     """Trains classification models and runs OLS regression."""
@@ -198,7 +241,7 @@ def get_model_results(df):
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     X_reg_const = sm.add_constant(X_reg)
     ols_model = sm.OLS(y_reg, X_reg_const).fit()
-    ols_summary = ols_model.summary()
+    ols_summary = ols_model.summary() # Keep the full summary object
 
     # 7. Train the FINAL Tuned Model (Decision Tree)
     dt_pipeline = Pipeline(steps=[
@@ -234,8 +277,7 @@ def calculate_kpis(df):
     return total_violations, total_fines, avg_fine, paid_rate
 
 
-# --- PLOTTING FUNCTIONS (No changes) ---
-
+# --- PLOTTING FUNCTIONS ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, with full borough names."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -355,7 +397,6 @@ with st.spinner('Loading data and training models... This may take a moment on f
     # Calculate KPIs immediately after loading data
     total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-    # We skip the street-level map attempt as it causes instability/errors
     model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
 
 st.success("Data and models loaded successfully!")
@@ -417,15 +458,18 @@ with tab1:
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
-# --- TAB 2: MODELING ---
+# --- TAB 2: MODELING (UPDATED OLS DISPLAY) ---
 with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
-    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
-    st.text(ols_summary.as_text())
-    st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
+    st.write(f"The OLS Regression has an **Adjusted R-squared of {ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()}**, meaning the factors below explain this proportion of the variance in the fine amount.")
+    
+    # Display the clean, styled OLS table
+    st.dataframe(create_ols_summary_df(ols_summary))
+    
+    st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")

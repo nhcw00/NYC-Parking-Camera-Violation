@@ -61,7 +61,7 @@ def load_data():
     
     # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
     headers = {} 
-    api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
+    api_url = "https.data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
     params = {'$limit': 50000} 
@@ -130,7 +130,7 @@ def load_data():
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION (No change) ---
+# --- BACKWARD ELIMINATION FUNCTION ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
@@ -284,7 +284,7 @@ def get_model_results(df):
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', model)])
         pipeline.fit(X_train, y_train)
         
-        # FIX: Prediction must use the feature data (X_test), not the target data (y_test)
+        # FIX: Prediction must use the feature data (X_test)
         y_pred = pipeline.predict(X_test) 
         y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
 
@@ -328,6 +328,7 @@ def get_model_results(df):
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
+    # FIX: Ensure 6 values are returned
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -439,21 +440,21 @@ def plot_mapbox_hotspots(df):
     fig = px.scatter_mapbox(map_df,
                             lat="lat",
                             lon="lon",
-                            size="count", # Size of bubbles based on count
-                            color="county", # Color of bubbles based on county
-                            hover_name="county", # Text shown on hover
-                            hover_data={"count": True, "lat": False, "lon": False}, # Include count in hover data, hide lat/lon
-                            zoom=9, # Initial zoom level
-                            mapbox_style="carto-positron", # Or "open-street-map", "stamen-toner"
+                            size="count", 
+                            color="county", 
+                            hover_name="county", 
+                            hover_data={"count": True, "lat": False, "lon": False}, 
+                            zoom=9, 
+                            mapbox_style="carto-positron", 
                             title="<b>Violation Hotspots by NYC Borough</b>",
-                            size_max=50 # Max size for bubbles for better visualization
+                            size_max=50 
                            )
     
     fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
     return fig
 
 
-# --- KPI CALCULATION FUNCTION ---
+# --- KPI CALCULATION FUNCTION (Restored) ---
 def calculate_kpis(df):
     """Calculates key metrics for the dashboard."""
     total_violations = len(df)
@@ -489,7 +490,7 @@ st.success("Data and models loaded successfully!")
 # Calculate KPIs
 total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-# Load and train models
+# Load and train models (Capturing all 6 values)
 model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 # Create Tabs for the Story
@@ -550,10 +551,22 @@ with tab2:
     st.header("The 'Climax': Why Do Fines and Payments Differ?")
     st.write("We move from *explaining* to *enlightening* by using predictive models.")
     
-    st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
-    st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost. An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $\alpha = 0.05$ level. The resulting model demonstrated an Adjusted $R^2$ of {adj_r_squared_value}. This low Adjusted $R^2$ suggests the model has limited explanatory power and that a substantial portion of the variance in the dependent variable remains unaccounted for. However, a low Adjusted $R^2$ does not serve as a test for linearity; therefore, we cannot conclude the true relationship is non-linear based on this metric alone.")
-    st.text(ols_summary.as_text())
-    st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
+    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
+    
+    if isinstance(ols_summary, str):
+        st.error(ols_summary)
+    else:
+        # --- FIX: Using f-string to display the adj_r_squared_value ---
+        st.write(f"An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $P < 0.05$ level. The resulting model demonstrated an Adjusted $R^2$ of **{adj_r_squared_value}**. This low Adjusted $R^2$ suggests the model has limited explanatory power and that a substantial portion of the variance in the dependent variable remains unaccounted for. However, a low Adjusted $R^2$ does not serve as a test for linearity; therefore, we cannot conclude the true relationship is non-linear based on this metric alone.")
+        
+        # Display the clean, styled OLS table
+        st.dataframe(create_ols_summary_df(ols_summary))
+        
+        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
+        
+        # --- RESTORING FULL OLS SUMMARY IN EXPANDER ---
+        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
+            st.text(ols_summary.as_text())
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")

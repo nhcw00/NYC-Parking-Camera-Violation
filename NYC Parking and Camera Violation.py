@@ -29,19 +29,18 @@ st.set_page_config(
 RANDOM_SEED = 42
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 
-# --- COUNTY MAPPING (Finalized) ---
+# --- COUNTY MAPPING (Consolidated) ---
 COUNTY_MAPPING = {
     'NY': 'Manhattan', 'MN': 'Manhattan',
     'Q': 'Queens', 'QN': 'Queens', 'QNS': 'Queens',
     'K': 'Brooklyn', 'BK': 'Brooklyn',
     'BX': 'Bronx',
     'R': 'Staten Island', 'ST': 'Staten Island',
-    # Adding the specific unmapped values that sometimes appear in the raw data
-    'KINGS': 'Brooklyn', # Catching the uppercase version of 'Kings'
-    'RICH': 'Staten Island', # Richmond
-    'NEW YORK': 'Manhattan', # Full name sometimes appears
+    'KINGS': 'Brooklyn', # Catching the specific uppercase 'Kings' spelling from raw data
+    'RICH': 'Staten Island', # Catching 'RICH' for Richmond
+    'NEW YORK': 'Manhattan', # Catching full name
     None: 'Unknown/Missing', 
-    'nan': 'Unknown/Missing'
+    'NAN': 'Unknown/Missing' # Catching any NaN strings after uppercase
 }
 
 # --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change) ---
@@ -122,18 +121,18 @@ def load_data():
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
     # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
-    # Convert county column to string and uppercase to standardize mapping keys
+    # 1. Standardize to uppercase string
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
     
-    # Map all variations to the clean borough name
+    # 2. Map all variations to the clean borough name
     df_processed['county'] = df_processed['county'].map(COUNTY_MAPPING)
 
-    # Final cleanup of any non-mapped values to 'Unknown/Missing'
+    # 3. Final cleanup of any non-mapped values to 'Unknown/Missing'
     df_processed['county'].fillna('Unknown/Missing', inplace=True)
-    
+
     return df_processed
 
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY (FIXES NAME ISSUES) ---
+# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
 def create_ols_summary_df(ols_summary):
     """
     Extracts key metrics from the OLS summary table and formats them for display,
@@ -141,7 +140,6 @@ def create_ols_summary_df(ols_summary):
     """
     # Extract the main parameters table (the second table in the summary)
     results_as_html = ols_summary.tables[1].as_html()
-    # Use index_col=0 to make the feature name the index
     results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
     
     # Clean up column names and select relevant columns
@@ -155,23 +153,23 @@ def create_ols_summary_df(ols_summary):
         'issuing_agency_TRANSIT AUTHORITY': 'Transit Authority',
         'issuing_agency_TRAFFIC': 'Traffic Dept.',
         'issuing_agency_DEPARTM': 'Police Dept.', # Assuming DEPARTM refers to NYPD or similar
+        'county_Kings': 'Brooklyn', # Consolidate specific lingering codes
     }
     
     # Apply renaming and consolidation logic
-    results_df.index = results_df.index.to_series().replace(name_map)
-    
-    # Further clean/consolidate based on string matching (for county dummies)
     new_index = []
     for idx in results_df.index:
-        if idx.startswith('county_'):
-            # Strip the 'county_' prefix and use the clean name
+        if idx in name_map:
+            new_index.append(name_map[idx])
+        elif idx.startswith('county_'):
+            # Strip the 'county_' prefix (e.g., county_Brooklyn -> Brooklyn)
             new_index.append(idx.split('_')[-1]) 
         else:
             new_index.append(idx)
             
     results_df.index = new_index
 
-    # Consolidate any duplicate index rows (like if both 'Brooklyn' and 'county_Brooklyn' survived, though shouldn't happen now)
+    # Consolidate any duplicate index rows (like if both 'Brooklyn' and 'Kings' survived, they are averaged)
     results_df = results_df.groupby(results_df.index).mean()
     results_df.index.name = 'Factor'
 
@@ -270,7 +268,7 @@ def get_model_results(df):
     # 6. Run OLS Regression for Fine Amount
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
-    # NOTE: The county names should be clean due to the fix in load_data
+    # NOTE: pd.get_dummies will now use the consolidated names (Manhattan, Brooklyn, etc.)
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     X_reg_const = sm.add_constant(X_reg)
     ols_model = sm.OLS(y_reg, X_reg_const).fit()
@@ -304,13 +302,16 @@ def plot_hotspots(df):
             showarrow=False
         )
     
-    # This counting now uses the fully consolidated 'Brooklyn' name
+    # The count now uses the fully consolidated borough names
     count_data = df['county'].value_counts().reset_index()
     count_data.columns = ['county', 'count'] 
     
+    # Ensure 'Unknown/Missing' is excluded from the visible chart
+    count_data = count_data[count_data['county'] != 'Unknown/Missing']
+
     if count_data.empty:
         return go.Figure().add_annotation(
-            text="No violations found to plot by county.",
+            text="No non-missing violations found to plot by county.",
             showarrow=False
         )
         
@@ -319,7 +320,7 @@ def plot_hotspots(df):
         title='<b>Parking Violation Hotspots by NYC Borough</b>',
         labels={'count': 'Number of Violations', 'county': 'Borough (County)'}
     )
-    # This should now show Brooklyn consolidated and sorted correctly
+    # This should now show only the 5 clean boroughs consolidated
     fig.update_layout(yaxis={'categoryorder':'total ascending'}) 
     return fig
 
@@ -384,6 +385,9 @@ def plot_map_hotspots(df):
     map_df = df['county'].value_counts().reset_index()
     map_df.columns = ['county', 'count']
     
+    # Exclude Unknown/Missing from the map plot
+    map_df = map_df[map_df['county'] != 'Unknown/Missing']
+
     # 1. Map the County names to their predefined center coordinates
     map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])

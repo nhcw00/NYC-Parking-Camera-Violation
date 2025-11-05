@@ -15,6 +15,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
+import numpy as np # Needed for the map data
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -39,9 +40,20 @@ COUNTY_MAPPING = {
     'BX': 'Bronx',
     'R': 'Staten Island (Richmond)',
     'ST': 'Staten Island (Richmond)',
-    # Include a default for clarity if other codes exist
     None: 'Unknown/Missing' 
 }
+
+# --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
+# Approximate center coordinates for each borough for mapping aggregation
+BOROUGH_COORDINATES = {
+    'Manhattan (New York)': (40.7831, -73.9712),
+    'Queens': (40.7282, -73.7949),
+    'Brooklyn (Kings)': (40.6782, -73.9442),
+    'Bronx': (40.8448, -73.8648),
+    'Staten Island (Richmond)': (40.5790, -74.1519),
+    'Unknown/Missing': (40.730610, -73.935242) # NYC general area
+}
+
 
 @st.cache_data
 def load_data():
@@ -53,7 +65,8 @@ def load_data():
     
     params = {
         '$limit': 5000,
-        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type'
+        # ADDING 'violation_location' to the select list
+        '$select': 'issue_date, violation_time, violation_status, fine_amount, penalty_amount, interest_amount, reduction_amount, payment_amount, amount_due, county, issuing_agency, plate, summons_number, judgment_entry_date, summons_image, license_type, violation_location'
     } 
 
     try:
@@ -108,8 +121,7 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # --- FIX 1 APPLICATION: MAP COUNTY CODES TO NAMES ---
-    # Apply the mapping before returning the data
+    # FIX 1 APPLICATION: MAP COUNTY CODES TO NAMES
     df_processed['county'] = df_processed['county'].astype(str).str.upper().map(COUNTY_MAPPING).fillna(df_processed['county'])
 
     return df_processed
@@ -240,7 +252,7 @@ def plot_hotspots(df):
     return fig
 
 def plot_rush_hour(df):
-    """Generates a bar chart of violations by hour, ordered 0-23. (FIX 2)"""
+    """Generates a bar chart of violations by hour, ordered 0-23."""
     count_data = df['violation_hour'].value_counts().reset_index()
     count_data.columns = ['violation_hour', 'count']
     
@@ -249,7 +261,6 @@ def plot_rush_hour(df):
         title='<b>Parking Violation "Rush Hour"</b>',
         labels={'count': 'Number of Violations', 'violation_hour': 'Hour of the Day (0-23)'}
     )
-    # FIX 2: Set the x-axis type to 'category' and ensure all integers 0-23 are displayed
     fig.update_xaxes(type='category', categoryorder='category ascending', dtick=1)
     return fig
 
@@ -293,6 +304,33 @@ def plot_roc_curves(roc_results):
     )
     return fig
 
+# --- NEW FUNCTION: MAP HOTSPOTS ---
+def plot_map_hotspots(df):
+    """Creates an aggregated map of violation counts by central borough coordinates."""
+    
+    map_df = df['county'].value_counts().reset_index()
+    map_df.columns = ['county', 'count']
+    
+    # 1. Map the County names to their predefined center coordinates
+    map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
+    map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
+    
+    # 2. Prepare the map data required by st.map
+    # Renaming columns to Streamlit's required lowercase 'lat' and 'lon'
+    map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
+    
+    # 3. Streamlit Map (Simple Scatter/Bubble Map)
+    st.markdown("#### Violation Hotspots by Borough (Aggregated Center Points)")
+    st.write("Since the API doesn't provide exact coordinates for every ticket, this map visualizes the total violation counts aggregated at the center point of each borough.")
+    
+    st.map(map_data, 
+           latitude=40.73, # Center of map
+           longitude=-73.95, 
+           zoom=10, 
+           size='size', # Use violation count for bubble size
+           color='#d80000' # Red color for violations
+          )
+    
 # --- STREAMLIT APP LAYOUT ---
 
 st.title("🗽 NYC Parking Violations: A Data Story")
@@ -302,7 +340,6 @@ st.write("This app analyzes the NYC Parking Violations dataset to find hotspots,
 with st.spinner('Loading data and training models... This may take a moment on first run.'):
     df_processed = load_data()
     
-    # Check 1: Stop execution if data loading failed
     if df_processed.empty:
         st.error("Cannot proceed: No data was loaded or all rows were dropped during cleaning.")
         st.stop()
@@ -318,22 +355,23 @@ tab1, tab2, tab3 = st.tabs([
     "3. The 'Solution' (Live Prediction Tool)"
 ])
 
-# --- TAB 1: EDA ---
+# --- TAB 1: EDA (Updated with Map) ---
 with tab1:
     st.header("The Setting: Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
     
+    # NEW MAP SECTION
+    plot_map_hotspots(df_processed)
+    st.markdown("---") # Visual separator
+    
     col1, col2 = st.columns(2)
     with col1:
-        # Now plots with full borough names
         st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
     with col2:
-        # Now plots with hours 0-23 in correct order
         st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
         
     st.header("The 'Rising Insight': Where and When are Violations *Unpaid*?")
     st.write("This answers your second question: exploring the relationship between non-payment, time, and location.")
-    # Now plots with full borough names
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
 # --- TAB 2: MODELING ---
@@ -362,7 +400,6 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # Dropdown options reflect the new, cleaned full names
             county = st.selectbox("Select County:", options=sorted(df_processed['county'].unique()))
             issuing_agency = st.selectbox("Select Issuing Agency:", options=sorted(df_processed['issuing_agency'].unique()))
         with col2:

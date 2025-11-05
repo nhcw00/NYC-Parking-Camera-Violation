@@ -44,7 +44,7 @@ COUNTY_MAPPING = {
     'NAN': 'Unknown/Missing'
 }
 
-# --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change for general coordinates) ---
+# --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change) ---
 BOROUGH_COORDINATES = {
     'Manhattan': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
@@ -64,7 +64,7 @@ def load_data():
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
-    params = {'$limit': 50000} # Set to 50k as per last discussion, can be increased to 100k if desired
+    params = {'$limit': 50000} 
 
     try:
         response = requests.get(api_url, params=params, headers=headers)
@@ -120,10 +120,6 @@ def load_data():
     # Feature Engineering: 'is_paid'
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
-    
-    # --- DATA CLEANING FIX: ISSUING AGENCY ---
-    if 'issuing_agency' in df_processed.columns:
-        df_processed['issuing_agency'] = df_processed['issuing_agency'].astype(str).str.strip().str.upper()
     
     # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
@@ -285,7 +281,9 @@ def get_model_results(df):
     for name, model in models.items():
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', model)])
         pipeline.fit(X_train, y_train)
-        y_pred = pipeline.predict(y_test)
+        
+        # FIX: Prediction must use the feature data (X_test), not the target data (y_test)
+        y_pred = pipeline.predict(X_test)
         y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
 
         report_dict = classification_report(y_test, y_pred, target_names=target_names, output_dict=True)
@@ -413,43 +411,37 @@ def plot_roc_curves(roc_results):
     )
     return fig
 
-# --- REPLACED st.map with plotly.express.scatter_mapbox ---
-def plot_mapbox_hotspots(df):
-    """
-    Creates an interactive map of violation counts by central borough coordinates
-    using Plotly Express, supporting color by county and hover information.
-    """
+def plot_map_hotspots(df):
+    """Creates an aggregated map of violation counts by central borough coordinates."""
+    
     map_df = df['county'].value_counts().reset_index()
     map_df.columns = ['county', 'count']
     
+    # Exclude Unknown/Missing from the map plot
     map_df = map_df[map_df['county'] != 'Unknown/Missing']
 
-    # Map the County names to their predefined center coordinates
+    # 1. Map the County names to their predefined center coordinates
     map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
     map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
     
-    # Ensure all necessary columns for Plotly are present and not NaN
-    map_df.dropna(subset=['lat', 'lon', 'count', 'county'], inplace=True)
-
-    if map_df.empty:
-        return go.Figure().add_annotation(
-            text="No valid data points for the interactive map.",
-            showarrow=False
-        )
-
-    fig = px.scatter_mapbox(map_df,
+    # 2. Prepare the map data required by st.map
+    map_data = map_df[['lat', 'lon', 'count']].rename(columns={'count': 'size'})
+    
+    # 3. Plotly Map for interactivity and color
+    st.markdown("#### Violation Hotspots by Borough (Aggregated Center Points)")
+    st.write("This map visualizes the total violation counts aggregated at the center point of each borough.")
+    
+    fig = px.scatter_mapbox(map_data,
                             lat="lat",
                             lon="lon",
-                            size="count", # Size of bubbles based on count
-                            color="county", # Color of bubbles based on county
-                            hover_name="county", # Text shown on hover
-                            hover_data={"count": True, "lat": False, "lon": False}, # Include count in hover data, hide lat/lon
-                            zoom=9, # Initial zoom level
-                            mapbox_style="carto-positron", # Or "open-street-map", "stamen-toner"
-                            title="<b>Violation Hotspots by NYC Borough</b>",
-                            size_max=50 # Max size for bubbles for better visualization
+                            size="count", 
+                            color="county", 
+                            hover_name="county", 
+                            hover_data={"count": True, "lat": False, "lon": False}, 
+                            zoom=9, 
+                            mapbox_style="carto-positron", 
+                            size_max=50 
                            )
-    
     fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
     return fig
 
@@ -532,9 +524,6 @@ with tab1:
     st.header("2. Where and When do Violations Occur?")
     st.write("We start by **explaining** the basic facts. Your personal question was 'Where was the places that I should be cautious the most?'.")
     
-    # --- Removed the specific street-level map warning here ---
-    st.markdown("---") 
-
     # AGGREGATED MAP (Now Plotly Express)
     st.plotly_chart(plot_mapbox_hotspots(df_processed), use_container_width=True)
     st.markdown("---") 
@@ -556,15 +545,8 @@ with tab2:
     
     st.subheader("Part 1: What Factors Influence the *Fine Amount*?")
     st.write("We used an OLS Regression to see which factors are statistically significant predictors of a fine's cost.")
-    
-    if isinstance(ols_summary, str):
-        st.error(ols_summary)
-    else:
-        st.write(f"The **Optimized Ordinary Least Squares (OLS) Regression** model, which includes only statistically significant predictors (at the $p < 0.05$ level), yielded an **Adjusted $R^2$ of {adj_r_squared_value}**.")
-        st.dataframe(create_ols_summary_df(ols_summary))
-        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-            st.text(ols_summary.as_text())
+    st.text(ols_summary.as_text())
+    st.caption("Note: A P>|t| value less than 0.05 indicates a factor is statistically significant.")
     
     st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
     st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
@@ -588,6 +570,7 @@ with tab3:
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
+            # FIX: Use the final, robust, type-safe options generation
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             

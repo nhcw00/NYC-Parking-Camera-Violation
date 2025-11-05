@@ -132,7 +132,7 @@ def load_data():
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
-    Returns the final fitted OLS model summary.
+    Returns the final fitted OLS model.
     """
     # Start with all predictors
     X_cols = list(X_data.columns)
@@ -159,11 +159,11 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
         
     # Return the final model summary after elimination
     if len(X_cols) == 0:
-        return None, "No significant predictors found."
+        return None
     
     X_final = sm.add_constant(X_data[X_cols])
     final_model = sm.OLS(y_data, X_final).fit()
-    return final_model, X_data[X_cols].columns.tolist()
+    return final_model
 
 
 # --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
@@ -173,8 +173,13 @@ def create_ols_summary_df(ols_summary):
     cleaning up feature names for better readability.
     """
     # Extract the main parameters table (the second table in the summary)
-    results_as_html = ols_summary.tables[1].as_html()
-    results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
+    # Using read_html is reliable here since the input is ols_summary.tables[1].as_html()
+    try:
+        results_as_html = ols_summary.tables[1].as_html()
+        results_df = pd.read_html(results_as_html, header=0, index_col=0)[0]
+    except (IndexError, ValueError):
+        # Fallback if the table structure is unexpectedly missing
+        return pd.DataFrame({"Error": ["Could not parse OLS coefficient table."]})
     
     # Clean up column names and select relevant columns
     results_df.columns = ['Coefficient', 'Std Error', 't', 'P>|t|', 'CI Lower (2.5%)', 'CI Upper (97.5%)']
@@ -232,7 +237,7 @@ def create_ols_summary_df(ols_summary):
 def get_model_results(df):
     """Trains classification models and runs OLS regression."""
     
-    # 1. Balance the Data (Same as before)
+    # 1. Balance the Data
     min_class_size = df['is_paid'].value_counts().min()
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
@@ -250,7 +255,7 @@ def get_model_results(df):
 
     st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
 
-    # 2. Define Preprocessor (Same as before)
+    # 2. Define Preprocessor 
     y_class = class_df['is_paid']
     X_class = class_df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']]
     categorical_features = ['county', 'issuing_agency']
@@ -264,12 +269,12 @@ def get_model_results(df):
         remainder='passthrough'
     )
 
-    # 3. Train/Test Split (Same as before)
+    # 3. Train/Test Split
     X_train, X_test, y_train, y_test = train_test_split(
         X_class, y_class, test_size=0.3, random_state=RANDOM_SEED, stratify=y_class
     )
 
-    # 4. Define All Models (Same as before)
+    # 4. Define All Models
     models = {
         "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
         "Naive Bayes": GaussianNB(),
@@ -279,7 +284,7 @@ def get_model_results(df):
         "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
     }
 
-    # 5. Train, Predict, and Store Results (Same as before)
+    # 5. Train, Predict, and Store Results
     accuracy_results = {}
     roc_results = {}
     target_names = ['Unpaid', 'Paid']
@@ -305,15 +310,19 @@ def get_model_results(df):
     y_reg = regression_df['fine_amount']
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     
-    # --- APPLY BACKWARD ELIMINATION ---
-    ols_model, final_features = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
+    ols_model = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
     
     if ols_model is None:
+        # Handle case where no significant predictors are left
         ols_summary = "No significant predictors found using backward elimination (P < 0.05)."
+        adj_r_squared_value = "" # No R-squared to display
     else:
+        # Get the final summary object
         ols_summary = ols_model.summary()
+        # Extract R-squared value directly from the model attribute (robust method)
+        adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
     
-    # 7. Train the FINAL Tuned Model (Decision Tree) (Same as before)
+    # 7. Train the FINAL Tuned Model (Decision Tree)
     dt_pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('classifier', DecisionTreeClassifier(
@@ -325,11 +334,11 @@ def get_model_results(df):
     ])
     dt_pipeline.fit(X_train, y_train)
     
-    # 8. Return results (Same as before)
+    # 8. Return results
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns
+    return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
 # --- PLOTTING FUNCTIONS (No changes) ---
@@ -473,7 +482,7 @@ with st.spinner('Loading data and training models... This may take a moment on f
     # Calculate KPIs immediately after loading data
     total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-    model_results_df, roc_results, ols_summary, best_model, feature_names = get_model_results(df_processed)
+    model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 st.success("Data and models loaded successfully!")
 
@@ -545,9 +554,8 @@ with tab2:
         # Handle the case where no significant predictors were found
         st.error(ols_summary)
     else:
-        # Extract Adj. R-squared directly from the summary string
-        adj_r_squared = ols_summary.as_html().split('Adj. R-squared:')[1].split('<')[0].strip()
-        st.write(f"The **Optimized OLS Regression** (Adjusted R-squared: **{adj_r_squared}**) uses only predictors significant at the $P < 0.05$ level.")
+        # Display the Adjusted R-squared value
+        st.write(f"The **Optimized OLS Regression** (Adjusted R-squared: **{adj_r_squared_value}**) uses only predictors significant at the $P < 0.05$ level.")
         
         # Display the clean, styled OLS table
         st.dataframe(create_ols_summary_df(ols_summary))

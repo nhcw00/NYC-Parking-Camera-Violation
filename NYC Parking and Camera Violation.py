@@ -61,7 +61,9 @@ def load_data():
     
     # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
     headers = {} 
-    api_url = "https.data.cityofnewyork.us/resource/nc67-uf89.json"
+    
+    # --- FIX: Restored the 'https://' scheme to the URL ---
+    api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
     # MINIMAL QUERY: Only include the $limit parameter.
     params = {'$limit': 50000} 
@@ -130,7 +132,7 @@ def load_data():
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION ---
+# --- BACKWARD ELIMINATION FUNCTION (No change) ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     """
     Performs backward elimination to select statistically significant predictors.
@@ -328,7 +330,6 @@ def get_model_results(df):
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    # FIX: Ensure 6 values are returned
     return results_df, roc_results, ols_summary, dt_pipeline, X_class.columns, adj_r_squared_value
 
 
@@ -454,7 +455,7 @@ def plot_mapbox_hotspots(df):
     return fig
 
 
-# --- KPI CALCULATION FUNCTION (Restored) ---
+# --- KPI CALCULATION FUNCTION ---
 def calculate_kpis(df):
     """Calculates key metrics for the dashboard."""
     total_violations = len(df)
@@ -490,7 +491,7 @@ st.success("Data and models loaded successfully!")
 # Calculate KPIs
 total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
 
-# Load and train models (Capturing all 6 values)
+# Load and train models
 model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value = get_model_results(df_processed)
 
 # Create Tabs for the Story
@@ -557,7 +558,12 @@ with tab2:
         st.error(ols_summary)
     else:
         # --- FIX: Using f-string to display the adj_r_squared_value ---
-        st.write(f"An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $P < 0.05$ level. The resulting model demonstrated an Adjusted $R^2$ of **{adj_r_squared_value}**. This low Adjusted $R^2$ suggests the model has limited explanatory power and that a substantial portion of the variance in the dependent variable remains unaccounted for. However, a low Adjusted $R^2$ does not serve as a test for linearity; therefore, we cannot conclude the true relationship is non-linear based on this metric alone.")
+        st.write(f"""
+        An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $P < 0.05$ level. 
+        The resulting model demonstrated an **Adjusted $R^2$ of {adj_r_squared_value}**. 
+        This low Adjusted $R^2$ suggests the model has limited explanatory power and that a substantial portion of the variance in the dependent variable remains unaccounted for. 
+        However, a low Adjusted $R^2$ does not serve as a test for linearity; therefore, we cannot conclude the true relationship is non-linear based on this metric alone.
+        """)
         
         # Display the clean, styled OLS table
         st.dataframe(create_ols_summary_df(ols_summary))
@@ -591,6 +597,7 @@ with tab3:
         col1, col2 = st.columns(2)
         with col1:
             # FIX: Use the final, robust, type-safe options generation
+            # This converts all values (including None/NaN) to strings before sorting
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             

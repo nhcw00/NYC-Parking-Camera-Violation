@@ -32,7 +32,7 @@ P_VALUE_THRESHOLD = 0.05
 
 # --- NEW LIMITATION CONSTANTS ---
 CHUNK_SIZE = 50000 
-TOTAL_MAX_LIMIT = 500000 # Hard limit for the entire dataset load
+TOTAL_MAX_LIMIT = 100000 # Hard limit for the entire dataset load
 
 # --- COUNTY MAPPING (Consolidated) ---
 COUNTY_MAPPING = {

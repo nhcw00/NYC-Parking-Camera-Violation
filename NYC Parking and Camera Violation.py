@@ -16,6 +16,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
+# Note: lxml must be in requirements.txt for pd.read_html
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -26,10 +27,12 @@ st.set_page_config(
 
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
-# The App Token is only needed for rate limits and is not essential for basic loading.
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 P_VALUE_THRESHOLD = 0.05 
-CHUNK_SIZE = 50000 # Max rows to retrieve per API call. Adjust based on API limits.
+
+# --- NEW LIMITATION CONSTANTS ---
+CHUNK_SIZE = 50000 
+TOTAL_MAX_LIMIT = 500000 # Hard limit for the entire dataset load
 
 # --- COUNTY MAPPING (Consolidated) ---
 COUNTY_MAPPING = {
@@ -58,10 +61,10 @@ BOROUGH_COORDINATES = {
 @st.cache_data
 def load_data():
     """
-    Loads, cleans, and preprocesses the full NYC parking violation data 
-    via SODA API using iterative fetching ($limit/$offset).
+    Loads, cleans, and preprocesses a large sample of NYC parking violation data 
+    via SODA API using iterative fetching ($limit/$offset) up to a hard cap.
     """
-    st.warning("🔄 **Loading full dataset iteratively** (This may take a long time and is limited by API throughput and memory).")
+    st.warning(f"🔄 Loading up to **{TOTAL_MAX_LIMIT:,} rows** iteratively (chunk size: {CHUNK_SIZE:,}).")
     
     # --- STABLE QUERY SETUP ---
     headers = {} 
@@ -70,9 +73,15 @@ def load_data():
     all_data = []
     offset = 0
     
-    while True:
+    while offset < TOTAL_MAX_LIMIT:
+        # Determine the limit for the current chunk
+        current_limit = min(CHUNK_SIZE, TOTAL_MAX_LIMIT - offset)
+        
+        if current_limit <= 0:
+            break
+
         params = {
-            '$limit': CHUNK_SIZE,
+            '$limit': current_limit,
             '$offset': offset
             # Add an App Token if required for rate limits: '$$app_token': YOUR_APP_TOKEN
         }
@@ -84,19 +93,19 @@ def load_data():
                 data = response.json()
                 
                 if not data:
-                    st.info("No more data found. Finishing load.")
+                    st.info(f"No more data found from API after retrieving {offset:,} rows. Stopping load.")
                     break # Exit the loop if the response is empty
                 
                 current_chunk_df = pd.DataFrame(data)
                 all_data.append(current_chunk_df)
                 
                 # Update offset for the next chunk
-                offset += CHUNK_SIZE
+                offset += len(current_chunk_df)
                 
-                st.info(f"Loaded {len(current_chunk_df)} rows. Total retrieved so far: {offset}")
+                st.info(f"Loaded {len(current_chunk_df):,} rows. Total retrieved so far: {offset:,}")
                 
             elif response.status_code == 429:
-                 st.error("Error 429: Too Many Requests. You may have hit an API rate limit. Try increasing the CHUNK_SIZE or adding an app token.")
+                 st.error("Error 429: Too Many Requests. API rate limit hit. Breaking.")
                  break
             elif response.status_code != 200:
                 st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
@@ -112,7 +121,7 @@ def load_data():
         return pd.DataFrame()
         
     df = pd.concat(all_data, ignore_index=True)
-    st.success(f"Successfully loaded a total of **{len(df):,}** rows.")
+    st.success(f"Data loading complete. Total rows: **{len(df):,}**.")
 
     # --- REST OF THE DATA PROCESSING (No significant change) ---
     df_processed = df.copy()
@@ -134,13 +143,12 @@ def load_data():
     df_processed['issue_date'] = pd.to_datetime(df_processed['issue_date'], errors='coerce')
     df_processed.dropna(subset=['issue_date'], inplace=True)
 
-    # 24-HOUR TIME FIX (Robust version)
+    # 24-HOUR TIME FIX
     time_parts = df_processed['violation_time'].astype(str).str.extract(r'(\d{2}).*?([AP])')
     time_parts.columns = ['hour', 'ampm']
     time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce') 
     time_parts.dropna(subset=['hour', 'ampm'], inplace=True)
 
-    # Align the dataframe with the successfully parsed time values
     df_processed = df_processed.loc[time_parts.index] 
     hour_int = time_parts['hour'].astype(int)
     ampm = time_parts['ampm']
@@ -154,7 +162,7 @@ def load_data():
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
     df_processed['is_paid'] = df_processed['violation_status'].isin(paid_statuses).astype(int)
     
-    # --- FINAL FIX: MAP COUNTY CODES TO NAMES (BEFORE ANALYSIS) ---
+    # Map County Codes
     if 'issuing_agency' in df_processed.columns:
         df_processed['issuing_agency'] = df_processed['issuing_agency'].astype(str).str.strip().str.upper()
     df_processed['county'] = df_processed['county'].astype(str).str.upper()
@@ -165,30 +173,19 @@ def load_data():
 
 # --- BACKWARD ELIMINATION FUNCTION (No change) ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
-    """
-    Performs backward elimination to select statistically significant predictors.
-    Returns the final fitted OLS model.
-    """
     X_cols = list(X_data.columns)
-    
     while len(X_cols) > 0:
         X = X_data[X_cols]
         X_opt = sm.add_constant(X)
         model = sm.OLS(y_data, X_opt).fit()
-        
         p_values = model.pvalues.iloc[1:]
-        
         max_p_value = p_values.max()
         max_p_col = p_values.idxmax()
-        
         if max_p_value < significance_level:
             break
-        
         X_cols.remove(max_p_col)
-        
     if len(X_cols) == 0:
         return None
-    
     X_final = sm.add_constant(X_data[X_cols])
     final_model = sm.OLS(y_data, X_final).fit()
     return final_model
@@ -261,10 +258,9 @@ def create_ols_summary_df(ols_summary):
 def get_model_results(df):
     """Trains classification models and runs OLS regression."""
     
-    # 1. Balance the Data
+    # 1. Balance the Data (Use a maximum of 5000 per class for fast training)
     min_class_size = df['is_paid'].value_counts().min()
     
-    # Limit the total number of samples for performance, especially with large datasets
     max_samples_per_class = min(5000, min_class_size)
     
     if min_class_size < 100:
@@ -314,11 +310,9 @@ def get_model_results(df):
     accuracy_results = {}
     roc_results = {}
     target_names = ['Unpaid', 'Paid']
-    
-    # --- FIX: We need to store the best model ---
-    best_model_pipeline = None # Initialize
-    max_auc = -1 # Initialize tracker for best AUC
-    best_model_name = "N/A" # Initialize name tracker
+    best_model_pipeline = None 
+    max_auc = -1 
+    best_model_name = "N/A" 
 
     for name, model in models.items():
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', model)])
@@ -331,7 +325,6 @@ def get_model_results(df):
         fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
         roc_auc = auc(fpr, tpr)
         
-        # Check if this model is the new best model
         if roc_auc > max_auc:
             max_auc = roc_auc
             best_model_pipeline = pipeline
@@ -347,6 +340,11 @@ def get_model_results(df):
     # 6. Run OLS Regression with Backward Elimination
     regression_df = df[['fine_amount', 'county', 'issuing_agency', 'violation_hour']].copy().dropna()
     y_reg = regression_df['fine_amount']
+    # Use a sample for OLS if the full loaded dataset is still large (e.g., > 100k)
+    if len(regression_df) > 100000:
+        regression_df = regression_df.sample(100000, random_state=RANDOM_SEED)
+        y_reg = regression_df['fine_amount']
+
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     
     ols_model = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
@@ -362,7 +360,6 @@ def get_model_results(df):
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     
-    # FIX: Return the best pipeline (Logistic Regression) and its name
     return results_df, roc_results, ols_summary, best_model_pipeline, X_class.columns, adj_r_squared_value, best_model_name
 
 
@@ -584,7 +581,6 @@ with tab2:
     if isinstance(ols_summary, str):
         st.error(ols_summary)
     else:
-        # --- FIX: Using f-string to display the adj_r_squared_value ---
         st.write(f"""
         An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $P < 0.05$ level. 
         The resulting model demonstrated an **Adjusted $R^2$ of {adj_r_squared_value}**. 
@@ -617,14 +613,12 @@ with tab2:
 # --- TAB 3: INTERACTIVE PREDICTION ---
 with tab3:
     st.header("The 'Solution': Will This Ticket Be Paid?")
-    # --- FIX: Use the dynamic best_model_name variable ---
     st.write(f"This tool uses our best model ({best_model_name}) to predict the payment status of a *theoretical* violation based on your inputs.")
 
     # Input forms for prediction
     with st.form("prediction_form"):
         col1, col2 = st.columns(2)
         with col1:
-            # FIX: Use the final, robust, type-safe options generation
             county_options = sorted([str(x) for x in df_processed['county'].unique()])
             issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
             
@@ -652,3 +646,4 @@ with tab3:
         else:
             st.error(f"**Prediction: UNPAID** (Probability: {prediction_proba[0]:.1%})")
             st.write("The model predicts this type of ticket is at high risk of remaining unpaid.")
+            

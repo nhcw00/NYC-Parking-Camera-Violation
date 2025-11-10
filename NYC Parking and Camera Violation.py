@@ -16,7 +16,6 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
-# Note: lxml must be in requirements.txt for pd.read_html
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -27,8 +26,10 @@ st.set_page_config(
 
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
+# The App Token is only needed for rate limits and is not essential for basic loading.
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 P_VALUE_THRESHOLD = 0.05 
+CHUNK_SIZE = 50000 # Max rows to retrieve per API call. Adjust based on API limits.
 
 # --- COUNTY MAPPING (Consolidated) ---
 COUNTY_MAPPING = {
@@ -56,32 +57,64 @@ BOROUGH_COORDINATES = {
 
 @st.cache_data
 def load_data():
-    """Loads, cleans, and preprocesses a sample of NYC parking violation data via SODA API."""
-    st.warning("✅ Loading a large **sample** of 50,000 rows for better analytical depth.")
+    """
+    Loads, cleans, and preprocesses the full NYC parking violation data 
+    via SODA API using iterative fetching ($limit/$offset).
+    """
+    st.warning("🔄 **Loading full dataset iteratively** (This may take a long time and is limited by API throughput and memory).")
     
-    # --- STABLE QUERY (Minimal parameters to avoid 400 error) ---
+    # --- STABLE QUERY SETUP ---
     headers = {} 
     api_url = "https://data.cityofnewyork.us/resource/nc67-uf89.json"
     
-    # MINIMAL QUERY: Only include the $limit parameter.
-    params = {'$limit': 100000} 
+    all_data = []
+    offset = 0
+    
+    while True:
+        params = {
+            '$limit': CHUNK_SIZE,
+            '$offset': offset
+            # Add an App Token if required for rate limits: '$$app_token': YOUR_APP_TOKEN
+        }
 
-    try:
-        response = requests.get(api_url, params=params, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            df = pd.DataFrame(data)
-            st.info(f"Successfully loaded {len(df)} rows.")
-        elif response.status_code == 400:
-             st.error("Error loading data. Status Code: 400 (Bad Request). The API server rejected the request. Please verify the dataset URL.")
-             return pd.DataFrame()
-        else:
-            st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"An unexpected error occurred during data loading: {e}")
+        try:
+            response = requests.get(api_url, params=params, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if not data:
+                    st.info("No more data found. Finishing load.")
+                    break # Exit the loop if the response is empty
+                
+                current_chunk_df = pd.DataFrame(data)
+                all_data.append(current_chunk_df)
+                
+                # Update offset for the next chunk
+                offset += CHUNK_SIZE
+                
+                st.info(f"Loaded {len(current_chunk_df)} rows. Total retrieved so far: {offset}")
+                
+            elif response.status_code == 429:
+                 st.error("Error 429: Too Many Requests. You may have hit an API rate limit. Try increasing the CHUNK_SIZE or adding an app token.")
+                 break
+            elif response.status_code != 200:
+                st.error(f"Error loading data. Status Code: {response.status_code}. Response text: {response.text}")
+                break
+                
+        except Exception as e:
+            st.error(f"An unexpected error occurred during data loading: {e}")
+            break
+
+    # Concatenate all chunks into a single DataFrame
+    if not all_data:
+        st.error("Failed to load any data.")
         return pd.DataFrame()
+        
+    df = pd.concat(all_data, ignore_index=True)
+    st.success(f"Successfully loaded a total of **{len(df):,}** rows.")
 
+    # --- REST OF THE DATA PROCESSING (No significant change) ---
     df_processed = df.copy()
 
     # Data Cleaning and Type Conversion
@@ -102,7 +135,7 @@ def load_data():
     df_processed.dropna(subset=['issue_date'], inplace=True)
 
     # 24-HOUR TIME FIX (Robust version)
-    time_parts = df_processed['violation_time'].str.extract(r'(\d{2}).*?([AP])')
+    time_parts = df_processed['violation_time'].astype(str).str.extract(r'(\d{2}).*?([AP])')
     time_parts.columns = ['hour', 'ampm']
     time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce') 
     time_parts.dropna(subset=['hour', 'ampm'], inplace=True)
@@ -230,21 +263,23 @@ def get_model_results(df):
     
     # 1. Balance the Data
     min_class_size = df['is_paid'].value_counts().min()
+    
+    # Limit the total number of samples for performance, especially with large datasets
+    max_samples_per_class = min(5000, min_class_size)
+    
     if min_class_size < 100:
         st.warning(f"Warning: Low sample size for one class ({min_class_size}). Model may be unreliable. Limiting data for modeling to balance classes.")
-    
-    max_samples_per_class = 5000
-    
+
     paid_df = df[df['is_paid'] == 1]
     unpaid_df = df[df['is_paid'] == 0]
     
-    actual_sample_size = min(len(paid_df), len(unpaid_df), max_samples_per_class)
+    actual_sample_size = max_samples_per_class
     
     paid_df = paid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     unpaid_df = unpaid_df.sample(actual_sample_size, random_state=RANDOM_SEED, replace=False)
     class_df = pd.concat([paid_df, unpaid_df])
 
-    st.info(f"Modeling is performed on a balanced subset of {len(class_df)} rows to maintain performance and prevent bias.")
+    st.info(f"Modeling is performed on a balanced subset of **{len(class_df):,}** rows to maintain performance and prevent bias.")
 
     # 2. Define Preprocessor 
     y_class = class_df['is_paid']
@@ -323,10 +358,7 @@ def get_model_results(df):
         ols_summary = ols_model.summary()
         adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
     
-    # 7. Train the FINAL Tuned Model (Decision Tree)
-    # --- REMOVED: We are now using the dynamic 'best_model_pipeline' ---
-    
-    # 8. Return results
+    # 7. Return results
     results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
     results_df.sort_values(by='AUC', ascending=False, inplace=True)
     

@@ -533,7 +533,7 @@ with tab1:
         
     st.header("3. Where and When are Violations *Unpaid*?")
     # --- FIX 2: Wording Change ---
-    st.write("This answers the question: **What is the relationship between non-payment, time, and location?**")
+    st.write("**What is the relationship between non-payment, time, and location?**")
     st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
 
 # --- TAB 2: MODELING ---

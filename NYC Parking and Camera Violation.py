@@ -13,6 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier  # <-- 1. IMPORT ADDED
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np 
@@ -304,6 +305,10 @@ def get_model_results(df):
         "Naive Bayes": GaussianNB(),
         "KNN": KNeighborsClassifier(), 
         "Random Forest": RandomForestClassifier(random_state=RANDOM_SEED),
+        # --- 2. MODELS ADDED HERE ---
+        "SVC (RBF)": SVC(random_state=RANDOM_SEED, probability=True),
+        "MLP Neural Network": MLPClassifier(random_state=RANDOM_SEED, max_iter=500, early_stopping=True, n_iter_no_change=15)
+        # --- END OF ADDITION ---
     }
 
     # 5. Train, Predict, and Store Results
@@ -465,17 +470,17 @@ def plot_mapbox_hotspots(df):
         )
 
     fig = px.scatter_mapbox(map_df,
-                            lat="lat",
-                            lon="lon",
-                            size="count", 
-                            color="county", 
-                            hover_name="county", 
-                            hover_data={"count": True, "lat": False, "lon": False}, 
-                            zoom=9, 
-                            mapbox_style="carto-positron", 
-                            title="<b>Violation Hotspots by NYC Borough</b>",
-                            size_max=50 
-                           )
+                             lat="lat",
+                             lon="lon",
+                             size="count", 
+                             color="county", 
+                             hover_name="county", 
+                             hover_data={"count": True, "lat": False, "lon": False}, 
+                             zoom=9, 
+                             mapbox_style="carto-positron", 
+                             title="<b>Violation Hotspots by NYC Borough</b>",
+                             size_max=50 
+                            )
     
     fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
     return fig
@@ -646,4 +651,3 @@ with tab3:
         else:
             st.error(f"**Prediction: UNPAID** (Probability: {prediction_proba[0]:.1%})")
             st.write("The model predicts this type of ticket is at high risk of remaining unpaid.")
-            

@@ -266,7 +266,6 @@ def get_model_results(df):
         X_class, y_class, test_size=0.3, random_state=RANDOM_SEED, stratify=y_class
     )
 
-    # Models dictionary now includes all 8
     models = {
         "Logistic Regression": LogisticRegression(random_state=RANDOM_SEED, max_iter=1000),
         "SVC (Linear)": SVC(kernel='linear', random_state=RANDOM_SEED, probability=True), 
@@ -334,7 +333,6 @@ def get_model_results(df):
 # --- PLOTTING FUNCTIONS (WITH 3 FIXES APPLIED) ---
 # =============================================================================
 
-# --- FIX 1: Highlight highest bar ---
 def plot_hotspots(df):
     """Generates a bar chart of violations by county, highlighting the max."""
     if 'county' not in df.columns or df['county'].isnull().all():
@@ -356,16 +354,16 @@ def plot_hotspots(df):
         count_data, x='count', y='county', orientation='h',
         title='<b>Parking Violation Hotspots by NYC Borough</b>',
         labels={'count': 'Number of Violations', 'county': 'Borough (County)'},
-        color='county', # Color by county
-        color_discrete_map=color_map # Apply the custom map
+        color='county', 
+        color_discrete_map=color_map 
     )
     fig.update_layout(
         yaxis={'categoryorder':'total ascending'},
-        showlegend=False # Hide the color legend
+        showlegend=False 
     ) 
     return fig
 
-# --- FIX 2: Change to Line Chart ---
+# --- FIX 2: Change to Line Chart (with correct sorting) ---
 def plot_rush_hour(df):
     """Generates a line chart of violations by hour, ordered 0-23."""
     count_data = df['violation_hour'].value_counts().reset_index()
@@ -374,13 +372,17 @@ def plot_rush_hour(df):
     # Sort by hour (0-23) for a proper line chart
     count_data = count_data.sort_values(by='violation_hour')
     
-    fig = px.line( # Changed from px.bar to px.line
+    fig = px.line(
         count_data, x='violation_hour', y='count',
         title='<b>Parking Violation "Rush Hour"</b>',
         labels={'count': 'Number of Violations', 'violation_hour': 'Hour of the Day (0-23)'},
-        markers=True # Add points to the line
+        markers=True 
     )
-    fig.update_xaxes(type='category', categoryorder='category ascending', dtick=1)
+    # --- THIS IS THE FIX ---
+    # Set type='category' to show all hours, but remove categoryorder
+    # to respect the DataFrame's sort order (0, 1, 2, ... 23).
+    fig.update_xaxes(type='category', dtick=1) 
+    # --- END FIX ---
     return fig
 
 # --- FIX 3: Change Heatmap Color ---
@@ -397,7 +399,7 @@ def plot_unpaid_heatmap(df):
         title='<b>Heatmap of Unpaid Violations by Borough and Hour</b>',
         labels={'x': 'Hour of the Day', 'y': 'Borough (County)', 'color': 'Unpaid Tickets'},
         aspect="auto",
-        color_continuous_scale='Reds' # Changed from default to 'Reds'
+        color_continuous_scale='Reds' # Changed to 'Reds'
     )
     fig.update_xaxes(dtick=1)
     return fig

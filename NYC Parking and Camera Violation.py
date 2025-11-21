@@ -18,8 +18,6 @@ from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
 import numpy as np
 
-# Note: lxml must be in requirements.txt for pd.read_html
-
 # --- Page Configuration ---
 st.set_page_config(
     page_title="NYC Parking Violation Story",

@@ -16,7 +16,8 @@ from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import roc_curve, auc, classification_report
 import statsmodels.api as sm
-import numpy as np 
+import numpy as np
+
 # Note: lxml must be in requirements.txt for pd.read_html
 
 # --- Page Configuration ---
@@ -28,6 +29,7 @@ st.set_page_config(
 
 # --- Constants & Credentials ---
 RANDOM_SEED = 42
+# Ideally, keep tokens in st.secrets, but for this script we keep it here
 YOUR_APP_TOKEN = "bdILqaDCH919EZ1HZNUCIUWWl" 
 P_VALUE_THRESHOLD = 0.05 
 
@@ -49,7 +51,7 @@ COUNTY_MAPPING = {
     'NAN': 'Unknown/Missing'
 }
 
-# --- GEOGRAPHICAL CONSTANTS FOR MAPPING (No change) ---
+# --- GEOGRAPHICAL CONSTANTS FOR MAPPING ---
 BOROUGH_COORDINATES = {
     'Manhattan': (40.7831, -73.9712),
     'Queens': (40.7282, -73.7949),
@@ -108,7 +110,7 @@ def load_data():
     df = pd.concat(all_data, ignore_index=True)
     st.success(f"Data loading complete. Total rows: **{len(df):,}**.")
 
-    # --- REST OF THE DATA PROCESSING (No significant change) ---
+    # --- DATA PROCESSING ---
     df_processed = df.copy()
 
     columns_to_drop = ['penalty_amount', 'interest_amount', 'reduction_amount', 'payment_amount', 'amount_due', 'plate', 'summons_number', 'judgment_entry_date', 'summons_image', 'license_type', 'violation_location', 'street_name', 'house_number']
@@ -127,6 +129,7 @@ def load_data():
     df_processed['issue_date'] = pd.to_datetime(df_processed['issue_date'], errors='coerce')
     df_processed.dropna(subset=['issue_date'], inplace=True)
 
+    # --- TIME CONVERSION LOGIC ---
     time_parts = df_processed['violation_time'].astype(str).str.extract(r'(\d{2}).*?([AP])')
     time_parts.columns = ['hour', 'ampm']
     time_parts['hour'] = pd.to_numeric(time_parts['hour'], errors='coerce') 
@@ -139,6 +142,13 @@ def load_data():
     df_processed['violation_hour'] = hour_int
     df_processed.loc[(ampm == 'P') & (hour_int != 12), 'violation_hour'] = hour_int + 12
     df_processed.loc[(ampm == 'A') & (hour_int == 12), 'violation_hour'] = 0 
+    
+    # --- !!! FIX FOR HOURS > 23 !!! ---
+    # Ensure hours are strictly between 0 and 23.
+    # This removes bad data entries (e.g. "45:00 P") that cause graph errors.
+    df_processed = df_processed[df_processed['violation_hour'].between(0, 23)]
+    # ----------------------------------
+
     df_processed.dropna(subset=['violation_hour'], inplace=True)
 
     paid_statuses = ['HEARING HELD-NOT GUILTY', 'PAID IN FULL', 'PLEADING GUILTY - PAID', 'SETTLEMENT PAID']
@@ -152,7 +162,7 @@ def load_data():
 
     return df_processed
 
-# --- BACKWARD ELIMINATION FUNCTION (No change) ---
+# --- BACKWARD ELIMINATION FUNCTION ---
 def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     X_cols = list(X_data.columns)
     while len(X_cols) > 0:
@@ -171,12 +181,10 @@ def backward_elimination_ols(X_data, y_data, significance_level=0.05):
     final_model = sm.OLS(y_data, X_final).fit()
     return final_model
 
-
-# --- NEW FUNCTION FOR CLEAN OLS DISPLAY ---
+# --- OLS SUMMARY DISPLAY FUNCTION ---
 def create_ols_summary_df(ols_summary):
     """
-    Extracts key metrics from the OLS summary table and formats them for display,
-    cleaning up feature names for better readability.
+    Extracts key metrics from the OLS summary table and formats them for display.
     """
     try:
         results_as_html = ols_summary.tables[1].as_html()
@@ -314,297 +322,4 @@ def get_model_results(df):
 
     X_reg = pd.get_dummies(regression_df[['county', 'issuing_agency', 'violation_hour']], drop_first=True, dtype=int)
     
-    ols_model = backward_elimination_ols(X_reg, y_reg, significance_level=P_VALUE_THRESHOLD)
-    
-    if ols_model is None:
-        ols_summary = "No significant predictors found using backward elimination (P < 0.05)."
-        adj_r_squared_value = "" 
-    else:
-        ols_summary = ols_model.summary()
-        adj_r_squared_value = f"{ols_model.rsquared_adj:.3f}"
-    
-    results_df = pd.DataFrame.from_dict(accuracy_results, orient='index')
-    results_df.sort_values(by='AUC', ascending=False, inplace=True)
-    
-    return results_df, roc_results, ols_summary, best_model_pipeline, X_class.columns, adj_r_squared_value, best_model_name
-
-
-# =============================================================================
-# --- PLOTTING FUNCTIONS (WITH 3 FIXES APPLIED) ---
-# =============================================================================
-
-def plot_hotspots(df):
-    """Generates a bar chart of violations by county, highlighting the max."""
-    if 'county' not in df.columns or df['county'].isnull().all():
-        return go.Figure().add_annotation(text="County data not available.", showarrow=False)
-    
-    count_data = df['county'].value_counts().reset_index()
-    count_data.columns = ['county', 'count'] 
-    count_data = count_data[count_data['county'] != 'Unknown/Missing']
-
-    if count_data.empty:
-        return go.Figure().add_annotation(text="No non-missing violations to plot.", showarrow=False)
-        
-    # Create a color map to highlight the max
-    max_value_county = count_data.loc[count_data['count'].idxmax(), 'county']
-    color_map = {c: 'lightgrey' for c in count_data['county']}
-    color_map[max_value_county] = '#d9534f' # A strong red color
-    
-    fig = px.bar(
-        count_data, x='count', y='county', orientation='h',
-        title='<b>Parking Violation Hotspots by NYC Borough</b>',
-        labels={'count': 'Number of Violations', 'county': 'Borough (County)'},
-        color='county', 
-        color_discrete_map=color_map 
-    )
-    fig.update_layout(
-        yaxis={'categoryorder':'total ascending'},
-        showlegend=False 
-    ) 
-    return fig
-
-# --- FIX 2: Change to Line Chart (with correct sorting) ---
-def plot_rush_hour(df):
-    """Generates a line chart of violations by hour, ordered 0-23."""
-    count_data = df['violation_hour'].value_counts().reset_index()
-    count_data.columns = ['violation_hour', 'count']
-    
-    # Sort by hour (0-23) for a proper line chart
-    count_data = count_data.sort_values(by='violation_hour')
-    
-    fig = px.line(
-        count_data, x='violation_hour', y='count',
-        title='<b>Parking Violation "Rush Hour"</b>',
-        labels={'count': 'Number of Violations', 'violation_hour': 'Hour of the Day (0-23)'},
-        markers=True 
-    )
-    # --- THIS IS THE FIX ---
-    # Set type='category' to show all hours, but remove categoryorder
-    # to respect the DataFrame's sort order (0, 1, 2, ... 23).
-    fig.update_xaxes(type='category', dtick=1) 
-    # --- END FIX ---
-    return fig
-
-# --- FIX 3: Change Heatmap Color ---
-def plot_unpaid_heatmap(df):
-    if df.empty or 'is_paid' not in df.columns:
-        return go.Figure().add_annotation(text="No data for Unpaid Heatmap.", showarrow=False)
-        
-    df_unpaid = df[df['is_paid'] == 0]
-    pivot_data = df_unpaid.pivot_table(
-        index='county', columns='violation_hour', aggfunc='size', fill_value=0
-    )
-    fig = px.imshow(
-        pivot_data,
-        title='<b>Heatmap of Unpaid Violations by Borough and Hour</b>',
-        labels={'x': 'Hour of the Day', 'y': 'Borough (County)', 'color': 'Unpaid Tickets'},
-        aspect="auto",
-        color_continuous_scale='Reds' # Changed to 'Reds'
-    )
-    fig.update_xaxes(dtick=1)
-    return fig
-
-# --- FIX 5: Sort ROC Curve Legend by AUC ---
-def plot_roc_curves(roc_results):
-    fig = go.Figure()
-    fig.add_shape(type='line', line=dict(dash='dash'), x0=0, x1=1, y0=0, y1=1)
-    
-    # Sort the results dictionary by AUC value (highest first)
-    sorted_results = dict(sorted(roc_results.items(), key=lambda item: item[1]['auc'], reverse=True))
-    
-    for name, result in sorted_results.items():
-        fig.add_trace(go.Scatter(
-            x=result['fpr'], y=result['tpr'], 
-            name=f"{name} (AUC = {result['auc']:.4f})",
-            mode='lines'
-        ))
-    
-    fig.update_layout(
-        title='<b>ROC Curve Comparison</b>',
-        xaxis_title='False Positive Rate',
-        yaxis_title='True Positive Rate',
-        legend_title='Model'
-    )
-    return fig
-
-def plot_mapbox_hotspots(df):
-    """
-    Creates an interactive map of violation counts by central borough coordinates
-    using Plotly Express, supporting color by county and hover information.
-    """
-    map_df = df['county'].value_counts().reset_index()
-    map_df.columns = ['county', 'count']
-    
-    map_df = map_df[map_df['county'] != 'Unknown/Missing']
-
-    map_df['lat'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[0])
-    map_df['lon'] = map_df['county'].map(lambda x: BOROUGH_COORDINATES.get(x, BOROUGH_COORDINATES['Unknown/Missing'])[1])
-    
-    map_df.dropna(subset=['lat', 'lon', 'count', 'county'], inplace=True)
-
-    if map_df.empty:
-        return go.Figure().add_annotation(
-            text="No valid data points for the interactive map.",
-            showarrow=False
-        )
-
-    fig = px.scatter_mapbox(map_df,
-                             lat="lat",
-                             lon="lon",
-                             size="count", 
-                             color="county", 
-                             hover_name="county", 
-                             hover_data={"count": True, "lat": False, "lon": False}, 
-                             zoom=9, 
-                             mapbox_style="carto-positron", 
-                             title="<b>Violation Hotspots by NYC Borough</b>",
-                             size_max=50 
-                            )
-    
-    fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
-    return fig
-
-
-# --- KPI CALCULATION FUNCTION ---
-def calculate_kpis(df):
-    """Calculates key metrics for the dashboard."""
-    total_violations = len(df)
-    total_fines = df['fine_amount'].sum()
-    avg_fine = df['fine_amount'].mean()
-    paid_count = df['is_paid'].sum()
-    paid_rate = (paid_count / total_violations) * 100 if total_violations > 0 else 0
-    return total_violations, total_fines, avg_fine, paid_rate
-
-# =============================================================================
-# --- STREAMLIT APP LAYOUT (WITH WORDING/TABLE FIXES) ---
-# =============================================================================
-
-st.title("🗽 NYC Parking Violations: A Data Story")
-st.write("This app analyzes the NYC Parking Violations dataset to find hotspots, predict fines, and identify factors in unpaid tickets.")
-
-with st.spinner('Loading data and training models... This may take a moment on first run.'):
-    df_processed = load_data()
-
-required_cols = ['county', 'issuing_agency', 'violation_hour', 'fine_amount', 'is_paid']
-if df_processed.empty or not all(col in df_processed.columns for col in required_cols):
-    st.error("Cannot run the application: Data loading failed or essential columns are missing after cleaning. Please verify the SODA API URL and data availability.")
-    st.stop() 
-
-st.success("Data and models loaded successfully!")
-
-total_violations, total_fines, avg_fine, paid_rate = calculate_kpis(df_processed)
-model_results_df, roc_results, ols_summary, best_model, feature_names, adj_r_squared_value, best_model_name = get_model_results(df_processed)
-
-tab1, tab2, tab3 = st.tabs([
-    "1. The 'Setting' (Exploratory Analysis)", 
-    "2. The 'Climax' (Predictive Modeling)", 
-    "3. The 'Solution' (Live Prediction Tool)"
-])
-
-# --- TAB 1: EDA ---
-with tab1:
-    st.header("1. Data Overview and Key Metrics")
-    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-    with kpi_col1:
-        st.metric(label="Total Violations (Sample)", value=f"{total_violations:,}")
-    with kpi_col2:
-        st.metric(label="Total Fine Value (Sample)", value=f"${total_fines:,.0f}")
-    with kpi_col3:
-        st.metric(label="Average Fine Amount", value=f"${avg_fine:.2f}")
-    with kpi_col4:
-        st.metric(label="Paid Rate (Sampled)", value=f"{paid_rate:.1f}%")
-    st.markdown("---") 
-
-    with st.expander("View Raw Data Sample (First 1,000 Rows)"):
-        st.dataframe(df_processed.head(1000), use_container_width=True)
-
-    st.header("2. Where and When do Violations Occur?")
-    # --- FIX 1: Wording Change ---
-    st.write("We start by **explaining** the basic facts to identify the places where drivers should be most cautious.")
-    
-    st.plotly_chart(plot_mapbox_hotspots(df_processed), use_container_width=True)
-    st.markdown("---") 
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(plot_hotspots(df_processed), use_container_width=True)
-    with col2:
-        st.plotly_chart(plot_rush_hour(df_processed), use_container_width=True)
-        
-    st.header("3. Where and When are Violations *Unpaid*?")
-    # --- FIX 2: Wording Change ---
-    st.write("**What is the relationship between non-payment, time, and location?**")
-    st.plotly_chart(plot_unpaid_heatmap(df_processed), use_container_width=True)
-
-# --- TAB 2: MODELING ---
-with tab2:
-    st.header("The 'Climax': Why Do Fines and Payments Differ?")
-    st.write("We move from *explaining* to *enlightening* by using predictive models.")
-    
-    st.subheader("Part 1: What Factors Influence the *Fine Amount* (Backward Elimination Model)?")
-    
-    if isinstance(ols_summary, str):
-        st.error(ols_summary)
-    else:
-        st.write(f"""
-        An Optimized Ordinary Least Squares (OLS) Regression was performed, retaining only variables statistically significant at the $P < 0.05$ level. 
-        The resulting model demonstrated an **Adjusted $R^2$ of {adj_r_squared_value}**. 
-        This low Adjusted $R^2$ suggests the model has limited explanatory power. As discussed, this is likely because the most important variable (the violation *type*) was not included.
-        """)
-        
-        st.dataframe(create_ols_summary_df(ols_summary))
-        st.caption("Note: Significant factors ($P<0.05$) are highlighted in green. The coefficient is the estimated change in the Fine Amount (in dollars) relative to the baseline.")
-        
-        with st.expander("View Full OLS Regression Output (Raw Statistics)"):
-            st.text(ols_summary.as_text())
-    
-    st.subheader("Part 2: Which Model is Best at Predicting *Payment*?")
-    # --- FIX 3: Wording Change (6 to 8) ---
-    st.write("We compared 8 models to see which one could best distinguish between a 'Paid' and 'Unpaid' ticket. The results are sorted by AUC (Area Under the Curve), the best all-around metric.")
-    
-    CLASSIFICATION_COLUMN_ORDER = ['AUC', 'Accuracy', 'F1-Score (W)', 'F1-Score (Paid)']
-    if all(col in model_results_df.columns for col in CLASSIFICATION_COLUMN_ORDER):
-        model_results_df = model_results_df[CLASSIFICATION_COLUMN_ORDER]
-    
-    # --- FIX 4: Highlight Best Model ---
-    st.dataframe(
-        model_results_df.style.format("{:.4f}").highlight_max(axis=0, subset=['AUC'], color='#d4edda')
-    )
-    
-    st.write("The ROC Curve plot visually confirms this. The 'best' model is the one closest to the top-left corner.")
-    st.plotly_chart(plot_roc_curves(roc_results), use_container_width=True)
-
-# --- TAB 3: INTERACTIVE PREDICTION ---
-with tab3:
-    st.header("The 'Solution': Will This Ticket Be Paid?")
-    st.write(f"This tool uses our best model ({best_model_name}) to predict the payment status of a *theoretical* violation based on your inputs.")
-
-    with st.form("prediction_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            county_options = sorted([str(x) for x in df_processed['county'].unique() if x != 'Unknown/Missing'])
-            issuing_agency_options = sorted([str(x) for x in df_processed['issuing_agency'].unique()])
-            
-            county = st.selectbox("Select County:", options=county_options)
-            issuing_agency = st.selectbox("Select Issuing Agency:", options=issuing_agency_options)
-        with col2:
-            violation_hour = st.slider("Select Violation Hour:", 0, 23, 10)
-            fine_amount = st.slider("Select Fine Amount ($):", 0, 300, 65)
-        
-        submitted = st.form_submit_button("Predict Payment Status")
-
-    if submitted:
-        input_data = pd.DataFrame(
-            [[fine_amount, county, issuing_agency, violation_hour]],
-            columns=['fine_amount', 'county', 'issuing_agency', 'violation_hour']
-        )
-        
-        prediction = best_model.predict(input_data)[0]
-        prediction_proba = best_model.predict_proba(input_data)[0]
-        
-        if prediction == 1:
-            st.success(f"**Prediction: PAID** (Probability: {prediction_proba[1]:.1%})")
-            st.write("The model predicts this type of ticket is likely to be paid.")
-        else:
-            st.error(f"**Prediction: UNPAID** (Probability: {prediction_proba[0]:.1%})")
-            st.write("The model predicts this type of ticket is at high risk of remaining unpaid.")
+    ols_model = backward
